@@ -1,13 +1,11 @@
 # pgcache-core
 
-## Purpose
-`pgcache-core` is a Java library that enables using PostgreSQL as a key-value cache backend, with a simple and familiar API similar to Redis. It is framework-agnostic (no Spring dependency) and easy to integrate into any Java application.
+## Overview
+This is the core module of the PgCache library, providing a framework-agnostic implementation for using PostgreSQL as a cache backend. It contains all the essential components needed to store, retrieve, and manage cached data in PostgreSQL.
 
-## Motivation
-- Popular Java cache solutions (Redis, Ehcache, Caffeine, etc.) do not leverage PostgreSQL as a cache backend.
-- `pgcache-core` helps utilize existing PostgreSQL infrastructure, reducing operational cost and providing a simple, effective cache experience.
+## Technical Details
 
-## Database Schema
+### Database Schema
 ```sql
 CREATE TABLE pgcache_store (
   key TEXT PRIMARY KEY,
@@ -15,11 +13,14 @@ CREATE TABLE pgcache_store (
   updated_at TIMESTAMP DEFAULT now(),
   ttl_seconds INT DEFAULT 60
 );
+
+CREATE INDEX pgcache_store_key_idx ON pgcache_store (key);
+CREATE INDEX pgcache_store_value_gin_idx ON pgcache_store USING GIN (value jsonb_path_ops);
 ```
 
-## Main Components
+### Core Components
 
-### 1. PgCacheClient (interface)
+#### 1. PgCacheClient (interface)
 - The main API for cache operations in your application.
 - Generic, type-safe, and supports per-entry TTL.
 - Methods:
@@ -29,39 +30,49 @@ CREATE TABLE pgcache_store (
   - `void clear();`
   - `int size();`
 
-### 2. PgCacheStore (class, implements PgCacheClient)
+#### 2. PgCacheStore (class, implements PgCacheClient)
 - The only implementation of PgCacheClient, directly interacts with PostgreSQL.
 - Responsible for serialization/deserialization, TTL management, data mapping, and PostgreSQL connection/queries.
+- Uses GIN index with jsonb_path_ops for optimized JSONB queries.
+- Builder pattern for easy configuration.
 
-### 3. PgCacheException (class)
+#### 3. PgCacheException (class)
 - Exception for cache-related errors.
 
-## Overall Flow
-```
-[Application] -> PgCacheClient (API) -> PgCacheStore (PostgreSQL)
-```
+### Implementation Details
 
-## Example Usage
+- Uses `JSONB` PostgreSQL data type for flexible storage of any Java object
+- Leverages Jackson for object serialization/deserialization
+- Uses PostgreSQL-specific `ON CONFLICT` syntax for efficient upserts
+- GIN index with `jsonb_path_ops` for optimized queries
+- Automatic table and index creation
+- Thread-safe implementation
+
+### Usage Example
 ```java
+// Create using builder pattern
 PgCacheClient client = PgCacheStore.builder()
     .dataSource(yourDataSource)
     .objectMapper(customObjectMapper) // optional
     .autoCreateTable(true) // optional, defaults to true
     .build();
 
+// Store data with 5-minute TTL
 client.put("user:1", userObject, Duration.ofMinutes(5));
+
+// Retrieve data
 Optional<User> user = client.get("user:1", User.class);
-client.evict("user:1");
-client.clear();
-int count = client.size();
+
+// Other operations
+client.evict("user:1"); // Remove specific key
+client.clear();         // Clear all cache
+int count = client.size(); // Count non-expired entries
 ```
 
-## Notes
-- The library focuses solely on PostgreSQL as the cache backend.
-- No Spring or other backend support.
-- Serialization/deserialization is handled by the implementation (e.g., Jackson, Gson, ...).
-- Minimum Java version: 17
+### Dependencies
+- Java 11+
+- PostgreSQL JDBC Driver
+- Jackson for JSON processing
+- SLF4J for logging
 
----
-
-For questions or contributions, please open an issue or PR.
+See the parent README for general information about the PgCache project.

@@ -64,21 +64,7 @@ cacheClient.evict("user:123");
 int cacheSize = cacheClient.size();
 ```
 
-## Database Schema
-
-The library automatically creates the following table and indexes:
-
-```sql
-CREATE TABLE pgcache_store (
-  key TEXT PRIMARY KEY,
-  value JSONB NOT NULL,
-  updated_at TIMESTAMP DEFAULT now(),
-  ttl_seconds INT DEFAULT 60
-);
-
-CREATE INDEX pgcache_store_key_idx ON pgcache_store (key);
-CREATE INDEX pgcache_store_value_gin_idx ON pgcache_store USING GIN (value jsonb_path_ops);
-```
+For database schema details and implementation specifics, please refer to the [pgcache-core module README](pgcache-core/README.md).
 
 ## Why use PostgreSQL as a cache?
 
