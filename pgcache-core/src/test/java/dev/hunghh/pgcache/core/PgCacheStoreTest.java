@@ -1,0 +1,243 @@
+package dev.hunghh.pgcache.core;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.sql.Timestamp;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Optional;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class PgCacheStoreTest {
+
+    @Mock
+    private DataSource dataSource;
+
+    @Mock
+    private Connection connection;
+
+    @Mock
+    private Statement statement;
+
+    @Mock
+    private PreparedStatement preparedStatement;
+
+    @Mock
+    private ResultSet resultSet;
+
+    private PgCacheStore cacheStore;
+    private ObjectMapper realObjectMapper;
+
+    @BeforeEach
+    void setUp() throws SQLException {
+        // Use lenient() to prevent "unnecessary stubbing" errors
+        lenient().when(dataSource.getConnection()).thenReturn(connection);
+        lenient().when(connection.createStatement()).thenReturn(statement);
+        lenient().when(connection.prepareStatement(anyString())).thenReturn(preparedStatement);
+
+        // Use a real ObjectMapper for serialization tests
+        realObjectMapper = new ObjectMapper();
+
+        // Create a PgCacheStore that doesn't auto-create the table for unit tests
+        cacheStore = PgCacheStore.builder()
+                .dataSource(dataSource)
+                .objectMapper(realObjectMapper)
+                .autoCreateTable(false)
+                .build();
+    }
+
+    @Test
+    void testInitializeTable() throws SQLException {
+        // Arrange
+        PgCacheStore store = PgCacheStore.builder()
+                .dataSource(dataSource)
+                .autoCreateTable(true)
+                .build();
+
+        // Verify
+        verify(statement).execute(contains("CREATE TABLE IF NOT EXISTS pgcache_store"));
+    }
+
+    @Test
+    void testGet_WhenKeyExists_AndNotExpired() throws Exception {
+        // Arrange
+        String key = "test-key";
+        TestObject expectedObject = new TestObject("test-value", 123);
+        String jsonValue = realObjectMapper.writeValueAsString(expectedObject);
+
+        when(preparedStatement.executeQuery()).thenReturn(resultSet);
+        when(resultSet.next()).thenReturn(true);
+        when(resultSet.getString("value")).thenReturn(jsonValue);
+        when(resultSet.getTimestamp("updated_at")).thenReturn(
+            Timestamp.from(Instant.now().minusSeconds(30)));
+        when(resultSet.getInt("ttl_seconds")).thenReturn(60);
+
+        // Act
+        Optional<TestObject> result = cacheStore.get(key, TestObject.class);
+
+        // Assert
+        assertTrue(result.isPresent());
+        assertEquals("test-value", result.get().getName());
+        assertEquals(123, result.get().getValue());
+
+        // Verify
+        verify(preparedStatement).setString(1, key);
+    }
+
+    @Test
+    void testGet_WhenKeyDoesNotExist() throws Exception {
+        // Arrange
+        when(preparedStatement.executeQuery()).thenReturn(resultSet);
+        when(resultSet.next()).thenReturn(false);
+
+        // Act
+        Optional<TestObject> result = cacheStore.get("non-existent-key", TestObject.class);
+
+        // Assert
+        assertFalse(result.isPresent());
+    }
+
+    @Test
+    void testGet_WhenKeyIsExpired() throws Exception {
+        // Arrange
+        String key = "expired-key";
+        TestObject expectedObject = new TestObject("expired-value", 456);
+        String jsonValue = realObjectMapper.writeValueAsString(expectedObject);
+
+        when(preparedStatement.executeQuery()).thenReturn(resultSet);
+        when(resultSet.next()).thenReturn(true);
+        when(resultSet.getString("value")).thenReturn(jsonValue);
+        when(resultSet.getTimestamp("updated_at")).thenReturn(
+            Timestamp.from(Instant.now().minusSeconds(120)));
+        when(resultSet.getInt("ttl_seconds")).thenReturn(60);
+
+        // Create a second prepared statement for the evict call
+        PreparedStatement evictStatement = mock(PreparedStatement.class);
+        when(connection.prepareStatement(contains("DELETE"))).thenReturn(evictStatement);
+
+        // Act
+        Optional<TestObject> result = cacheStore.get(key, TestObject.class);
+
+        // Assert
+        assertFalse(result.isPresent());
+
+        // Verify evict was called
+        verify(evictStatement).setString(1, key);
+        verify(evictStatement).executeUpdate();
+    }
+
+    @Test
+    void testPut() throws Exception {
+        // Arrange
+        String key = "test-key";
+        TestObject value = new TestObject("test-value", 123);
+        Duration ttl = Duration.ofMinutes(5);
+
+        // Act
+        cacheStore.put(key, value, ttl);
+
+        // Assert & Verify
+        verify(preparedStatement).setString(1, key);
+
+        // Capture the JSON string
+        ArgumentCaptor<String> jsonCaptor = ArgumentCaptor.forClass(String.class);
+        verify(preparedStatement).setString(eq(2), jsonCaptor.capture());
+
+        // Verify JSON is correct
+        TestObject deserializedObject = realObjectMapper.readValue(jsonCaptor.getValue(), TestObject.class);
+        assertEquals("test-value", deserializedObject.getName());
+        assertEquals(123, deserializedObject.getValue());
+
+        // Verify TTL
+        verify(preparedStatement).setInt(3, 300); // 5 minutes = 300 seconds
+        verify(preparedStatement).executeUpdate();
+    }
+
+    @Test
+    void testEvict() throws Exception {
+        // Arrange
+        String key = "key-to-evict";
+
+        // Act
+        cacheStore.evict(key);
+
+        // Verify
+        verify(preparedStatement).setString(1, key);
+        verify(preparedStatement).executeUpdate();
+    }
+
+    @Test
+    void testClear() throws Exception {
+        // Act
+        cacheStore.clear();
+
+        // Verify
+        verify(statement).executeUpdate(contains("DELETE FROM pgcache_store"));
+    }
+
+    @Test
+    void testSize() throws Exception {
+        // Arrange
+        when(statement.executeQuery(anyString())).thenReturn(resultSet);
+        when(resultSet.next()).thenReturn(true);
+        when(resultSet.getInt(1)).thenReturn(42);
+
+        // Act
+        int size = cacheStore.size();
+
+        // Assert
+        assertEquals(42, size);
+
+        // Verify
+        verify(statement).executeQuery(contains("COUNT(*)"));
+        verify(statement).executeQuery(contains("ttl_seconds * interval '1 second'"));
+    }
+
+    // Test object class for serialization/deserialization
+    static class TestObject {
+        private String name;
+        private int value;
+
+        // Default constructor for Jackson
+        public TestObject() {
+        }
+
+        public TestObject(String name, int value) {
+            this.name = name;
+            this.value = value;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public int getValue() {
+            return value;
+        }
+
+        public void setValue(int value) {
+            this.value = value;
+        }
+    }
+}
