@@ -16,6 +16,18 @@ import org.slf4j.LoggerFactory;
 
 /**
  * PgCacheStore: Implementation of PgCacheClient, directly interacts with PostgreSQL as cache backend.
+ * 
+ * <p>This implementation is thread-safe and can be used concurrently from multiple threads.
+ * It uses double-checked locking for efficient table initialization and proper exception
+ * handling to prevent resource leaks.</p>
+ * 
+ * <p><strong>Thread Safety:</strong></p>
+ * <ul>
+ *   <li>Table initialization uses double-checked locking pattern</li>
+ *   <li>Jackson ObjectMapper is thread-safe for read operations</li>
+ *   <li>DataSource connections are obtained per operation</li>
+ *   <li>All cache operations are safe for concurrent access</li>
+ * </ul>
  */
 public class PgCacheStore implements PgCacheClient {
     private static final Logger logger = LoggerFactory.getLogger(PgCacheStore.class);
@@ -39,6 +51,9 @@ public class PgCacheStore implements PgCacheClient {
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
     private final boolean autoCreateTable;
+    
+    // Thread-safe initialization flag using double-checked locking pattern
+    private volatile boolean tableInitialized = false;
 
     /**
      * Creates a PgCacheStore with specified dataSource.
@@ -67,8 +82,26 @@ public class PgCacheStore implements PgCacheClient {
 
     /**
      * Initializes the cache table in the database if it doesn't exist.
+     * Uses double-checked locking pattern for thread safety.
      */
     private void initializeTable() {
+        // First check without synchronization for performance
+        if (!tableInitialized) {
+            synchronized (this) {
+                // Second check with synchronization to ensure only one thread initializes
+                if (!tableInitialized) {
+                    performTableInitialization();
+                    tableInitialized = true;
+                }
+            }
+        }
+    }
+
+    /**
+     * Performs the actual table initialization logic.
+     * This method is called only once and only from synchronized context.
+     */
+    private void performTableInitialization() {
         try (Connection conn = dataSource.getConnection();
              Statement stmt = conn.createStatement()) {
 
@@ -139,7 +172,12 @@ public class PgCacheStore implements PgCacheClient {
 
                 // Check if expired
                 if (isExpired(updatedAt, ttlSeconds)) {
-                    evict(key);
+                    // Safely evict expired key - don't let eviction failures affect the get operation
+                    try {
+                        evict(key);
+                    } catch (Exception evictException) {
+                        logger.warn("Failed to evict expired key '{}', continuing with empty result", key, evictException);
+                    }
                     return Optional.empty();
                 }
 

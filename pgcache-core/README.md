@@ -48,7 +48,8 @@ CREATE INDEX pgcache_store_value_gin_idx ON pgcache_store USING GIN (value jsonb
 - Uses PostgreSQL-specific `ON CONFLICT` syntax for efficient upserts
 - GIN index with `jsonb_path_ops` for optimized queries
 - Automatic table and index creation
-- Thread-safe implementation
+- **Thread-safe implementation** with double-checked locking for initialization
+- Proper exception handling to prevent resource leaks
 
 ### Usage Example
 ```java
