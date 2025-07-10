@@ -7,7 +7,7 @@ This is the core module of the PgCache library, providing a framework-agnostic i
 
 ### Database Schema
 ```sql
-CREATE TABLE pgcache_store (
+CREATE UNLOGGED TABLE pgcache_store (
   key TEXT PRIMARY KEY,
   value JSONB NOT NULL,
   updated_at TIMESTAMP DEFAULT now(),
@@ -17,6 +17,8 @@ CREATE TABLE pgcache_store (
 CREATE INDEX pgcache_store_key_idx ON pgcache_store (key);
 CREATE INDEX pgcache_store_value_gin_idx ON pgcache_store USING GIN (value jsonb_path_ops);
 ```
+
+> **Note**: Uses UNLOGGED table for optimal cache performance. UNLOGGED tables are faster but data is lost on server restart, which is acceptable for cache use cases.
 
 ### Core Components
 

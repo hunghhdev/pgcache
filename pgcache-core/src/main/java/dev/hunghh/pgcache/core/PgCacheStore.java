@@ -21,7 +21,7 @@ public class PgCacheStore implements PgCacheClient {
     private static final Logger logger = LoggerFactory.getLogger(PgCacheStore.class);
     private static final String TABLE_NAME = "pgcache_store";
     private static final String CREATE_TABLE_SQL =
-        "CREATE TABLE IF NOT EXISTS " + TABLE_NAME + " (" +
+        "CREATE UNLOGGED TABLE IF NOT EXISTS " + TABLE_NAME + " (" +
         "  key TEXT PRIMARY KEY, " +
         "  value JSONB NOT NULL, " +
         "  updated_at TIMESTAMP DEFAULT now(), " +
@@ -78,7 +78,7 @@ public class PgCacheStore implements PgCacheClient {
                 tableExists = rs.next();
             }
 
-            // Create table if it doesn't exist
+            // Create table with dynamic UNLOGGED option
             stmt.execute(CREATE_TABLE_SQL);
 
             // Create index on updated_at and ttl_seconds for expiry checking
@@ -88,7 +88,7 @@ public class PgCacheStore implements PgCacheClient {
 
             // Log table creation status
             if (!tableExists) {
-                logger.info("Table '{}' was created successfully", TABLE_NAME);
+                logger.info("UNLOGGED table '{}' was created successfully", TABLE_NAME);
             } else {
                 logger.debug("Table '{}' already exists, skipping creation", TABLE_NAME);
             }

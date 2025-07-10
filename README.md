@@ -8,10 +8,11 @@ A Java library for using PostgreSQL as a cache backend, leveraging your existing
 
 ## Features
 
-- Use PostgreSQL as a key-value cache storage
+- Use PostgreSQL as a key-value cache storage with UNLOGGED tables for optimal performance
 - Simple API with get/put/evict operations
 - Support for TTL (Time-To-Live) on cache entries
 - Automatic serialization/deserialization of Java objects to/from JSON
+- Leverages PostgreSQL's JSONB and GIN indexes for efficient storage and querying
 - No external dependencies outside of PostgreSQL and Jackson
 - Java 11+ compatible
 

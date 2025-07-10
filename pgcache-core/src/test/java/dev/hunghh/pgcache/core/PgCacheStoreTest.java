@@ -10,6 +10,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -65,14 +66,20 @@ class PgCacheStoreTest {
 
     @Test
     void testInitializeTable() throws SQLException {
-        // Arrange
+        // Arrange - Mock DatabaseMetaData
+        DatabaseMetaData metaData = mock(DatabaseMetaData.class);
+        when(connection.getMetaData()).thenReturn(metaData);
+        when(metaData.getTables(null, null, "pgcache_store", new String[]{"TABLE"}))
+                .thenReturn(resultSet);
+        when(resultSet.next()).thenReturn(false); // Table doesn't exist
+        
         PgCacheStore store = PgCacheStore.builder()
                 .dataSource(dataSource)
                 .autoCreateTable(true)
                 .build();
 
         // Verify
-        verify(statement).execute(contains("CREATE TABLE IF NOT EXISTS pgcache_store"));
+        verify(statement).execute(contains("CREATE UNLOGGED TABLE IF NOT EXISTS pgcache_store"));
     }
 
     @Test
