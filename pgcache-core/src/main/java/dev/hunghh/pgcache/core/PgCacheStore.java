@@ -8,6 +8,9 @@ import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import javax.sql.DataSource;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -48,9 +51,16 @@ public class PgCacheStore implements PgCacheClient {
         "CREATE INDEX IF NOT EXISTS " + TABLE_NAME + "_value_gin_idx " +
         "ON " + TABLE_NAME + " USING GIN (value jsonb_path_ops)";
 
+    private static final String CREATE_TTL_INDEX_SQL =
+        "CREATE INDEX IF NOT EXISTS " + TABLE_NAME + "_ttl_idx " +
+        "ON " + TABLE_NAME + " (updated_at, ttl_seconds)";
+
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
     private final boolean autoCreateTable;
+    private final boolean enableBackgroundCleanup;
+    private final long cleanupIntervalMinutes;
+    private volatile ScheduledExecutorService cleanupExecutor;
     
     // Thread-safe initialization flag using double-checked locking pattern
     private volatile boolean tableInitialized = false;
@@ -69,6 +79,8 @@ public class PgCacheStore implements PgCacheClient {
         this.dataSource = dataSource;
         this.objectMapper = new ObjectMapper();
         this.autoCreateTable = autoCreateTable;
+        this.enableBackgroundCleanup = false;
+        this.cleanupIntervalMinutes = 5;
 
         if (autoCreateTable) {
             initializeTable();
@@ -122,6 +134,8 @@ public class PgCacheStore implements PgCacheClient {
             stmt.execute(CREATE_INDEX_SQL);
             // Create GIN index on value column for JSONB data
             stmt.execute(CREATE_GIN_INDEX_SQL);
+            // Create TTL index for efficient expiration queries
+            stmt.execute(CREATE_TTL_INDEX_SQL);
 
             // Log table creation status
             if (!tableExists) {
@@ -285,6 +299,34 @@ public class PgCacheStore implements PgCacheClient {
     }
 
     /**
+     * Removes all expired entries from the cache.
+     * This method performs a batch cleanup of all entries that have exceeded their TTL.
+     * 
+     * @return the number of expired entries that were removed
+     */
+    public int cleanupExpired() {
+        String sql = "DELETE FROM " + TABLE_NAME +
+                     " WHERE (updated_at + (ttl_seconds * interval '1 second')) <= now()";
+
+        try (Connection conn = getValidatedConnection();
+             Statement stmt = conn.createStatement()) {
+
+            int deletedCount = stmt.executeUpdate(sql);
+            
+            if (deletedCount > 0) {
+                logger.info("Cleaned up {} expired cache entries", deletedCount);
+            } else {
+                logger.debug("No expired cache entries found during cleanup");
+            }
+            
+            return deletedCount;
+        } catch (SQLException e) {
+            logger.error("Failed to cleanup expired cache entries", e);
+            throw new PgCacheException("Failed to cleanup expired cache entries", e);
+        }
+    }
+
+    /**
      * Checks if a cache entry is expired.
      *
      * @param updatedAt the timestamp when the entry was last updated
@@ -311,6 +353,8 @@ public class PgCacheStore implements PgCacheClient {
         private DataSource dataSource;
         private ObjectMapper objectMapper;
         private boolean autoCreateTable = true;
+        private boolean enableBackgroundCleanup = false;
+        private long cleanupIntervalMinutes = 5;
 
         private Builder() {
             this.objectMapper = new ObjectMapper();
@@ -350,6 +394,28 @@ public class PgCacheStore implements PgCacheClient {
         }
 
         /**
+         * Enables background cleanup of expired entries.
+         *
+         * @param enableBackgroundCleanup true to enable background cleanup
+         * @return this builder
+         */
+        public Builder enableBackgroundCleanup(boolean enableBackgroundCleanup) {
+            this.enableBackgroundCleanup = enableBackgroundCleanup;
+            return this;
+        }
+
+        /**
+         * Sets the interval for background cleanup.
+         *
+         * @param cleanupIntervalMinutes cleanup interval in minutes
+         * @return this builder
+         */
+        public Builder cleanupIntervalMinutes(long cleanupIntervalMinutes) {
+            this.cleanupIntervalMinutes = cleanupIntervalMinutes;
+            return this;
+        }
+
+        /**
          * Builds a new PgCacheStore instance.
          *
          * @return a new PgCacheStore instance
@@ -362,20 +428,69 @@ public class PgCacheStore implements PgCacheClient {
             if (objectMapper == null) {
                 objectMapper = new ObjectMapper();
             }
-            return new PgCacheStore(dataSource, objectMapper, autoCreateTable);
+            return new PgCacheStore(dataSource, objectMapper, autoCreateTable, 
+                                  enableBackgroundCleanup, cleanupIntervalMinutes);
         }
     }
 
     /**
      * Private constructor used by the Builder.
      */
-    private PgCacheStore(DataSource dataSource, ObjectMapper objectMapper, boolean autoCreateTable) {
+    private PgCacheStore(DataSource dataSource, ObjectMapper objectMapper, boolean autoCreateTable, 
+                         boolean enableBackgroundCleanup, long cleanupIntervalMinutes) {
         this.dataSource = dataSource;
         this.objectMapper = objectMapper;
         this.autoCreateTable = autoCreateTable;
+        this.enableBackgroundCleanup = enableBackgroundCleanup;
+        this.cleanupIntervalMinutes = cleanupIntervalMinutes;
 
         if (autoCreateTable) {
             initializeTable();
+        }
+        
+        if (enableBackgroundCleanup) {
+            startBackgroundCleanup();
+        }
+    }
+
+    /**
+     * Starts the background cleanup task if enabled.
+     */
+    private void startBackgroundCleanup() {
+        if (cleanupExecutor == null || cleanupExecutor.isShutdown()) {
+            cleanupExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "pgcache-cleanup");
+                t.setDaemon(true);
+                return t;
+            });
+            
+            cleanupExecutor.scheduleWithFixedDelay(() -> {
+                try {
+                    cleanupExpired();
+                } catch (Exception e) {
+                    logger.warn("Background cleanup failed", e);
+                }
+            }, cleanupIntervalMinutes, cleanupIntervalMinutes, TimeUnit.MINUTES);
+            
+            logger.info("Started background cleanup with interval: {} minutes", cleanupIntervalMinutes);
+        }
+    }
+
+    /**
+     * Stops the background cleanup task.
+     */
+    public void shutdown() {
+        if (cleanupExecutor != null && !cleanupExecutor.isShutdown()) {
+            cleanupExecutor.shutdown();
+            try {
+                if (!cleanupExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    cleanupExecutor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                cleanupExecutor.shutdownNow();
+            }
+            logger.info("Background cleanup shutdown completed");
         }
     }
 

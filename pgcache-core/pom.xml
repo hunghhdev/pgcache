@@ -50,6 +50,14 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- HikariCP for connection pooling in tests -->
+        <dependency>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
+            <version>5.0.1</version>
+            <scope>test</scope>
+        </dependency>
+
         <!-- TestContainers dependencies -->
         <dependency>
             <groupId>org.testcontainers</groupId>
