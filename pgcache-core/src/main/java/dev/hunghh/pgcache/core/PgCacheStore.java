@@ -40,7 +40,7 @@ public class PgCacheStore implements PgCacheClient {
         "  key TEXT PRIMARY KEY, " +
         "  value JSONB NOT NULL, " +
         "  updated_at TIMESTAMP DEFAULT now(), " +
-        "  ttl_seconds INT DEFAULT 60" +
+        "  ttl_seconds INT" +
         ")";
 
     private static final String CREATE_INDEX_SQL =
@@ -53,7 +53,8 @@ public class PgCacheStore implements PgCacheClient {
 
     private static final String CREATE_TTL_INDEX_SQL =
         "CREATE INDEX IF NOT EXISTS " + TABLE_NAME + "_ttl_idx " +
-        "ON " + TABLE_NAME + " (updated_at, ttl_seconds)";
+        "ON " + TABLE_NAME + " (updated_at, ttl_seconds) " +
+        "WHERE ttl_seconds IS NOT NULL";
 
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
@@ -187,10 +188,10 @@ public class PgCacheStore implements PgCacheClient {
                 // Get the values
                 String jsonValue = rs.getString("value");
                 Instant updatedAt = rs.getTimestamp("updated_at").toInstant();
-                int ttlSeconds = rs.getInt("ttl_seconds");
+                Integer ttlSeconds = rs.getObject("ttl_seconds", Integer.class); // Handle NULL
 
-                // Check if expired
-                if (isExpired(updatedAt, ttlSeconds)) {
+                // Check if expired (only if TTL is set)
+                if (ttlSeconds != null && isExpired(updatedAt, ttlSeconds)) {
                     // Safely evict expired key - don't let eviction failures affect the get operation
                     try {
                         evict(key);
@@ -249,6 +250,39 @@ public class PgCacheStore implements PgCacheClient {
     }
 
     @Override
+    public <T> void put(String key, T value) {
+        if (key == null || key.isEmpty()) {
+            throw new PgCacheException("Cache key cannot be null or empty");
+        }
+        if (value == null) {
+            throw new PgCacheException("Cache value cannot be null");
+        }
+
+        // SQL for upsert without TTL (permanent entry)
+        String sql = "INSERT INTO " + TABLE_NAME +
+                     " (key, value, updated_at, ttl_seconds) " +
+                     "VALUES (?, ?::jsonb, now(), NULL) " +
+                     "ON CONFLICT (key) DO UPDATE SET " +
+                     "value = EXCLUDED.value, " +
+                     "updated_at = EXCLUDED.updated_at, " +
+                     "ttl_seconds = EXCLUDED.ttl_seconds";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            // Serialize the value to JSON
+            String jsonValue = objectMapper.writeValueAsString(value);
+
+            stmt.setString(1, key);
+            stmt.setString(2, jsonValue);
+
+            stmt.executeUpdate();
+        } catch (Exception e) {
+            throw new PgCacheException("Failed to put value in cache", e);
+        }
+    }
+
+    @Override
     public void evict(String key) {
         if (key == null || key.isEmpty()) {
             throw new PgCacheException("Cache key cannot be null or empty");
@@ -281,8 +315,9 @@ public class PgCacheStore implements PgCacheClient {
 
     @Override
     public int size() {
+        // Count all non-expired entries (entries with NULL TTL are considered permanent)
         String sql = "SELECT COUNT(*) FROM " + TABLE_NAME +
-                     " WHERE (updated_at + (ttl_seconds * interval '1 second')) > now()";
+                     " WHERE ttl_seconds IS NULL OR (updated_at + (ttl_seconds * interval '1 second')) > now()";
 
         try (Connection conn = getValidatedConnection();
              Statement stmt = conn.createStatement();
@@ -301,12 +336,14 @@ public class PgCacheStore implements PgCacheClient {
     /**
      * Removes all expired entries from the cache.
      * This method performs a batch cleanup of all entries that have exceeded their TTL.
+     * Entries with NULL TTL (permanent entries) are not affected.
      * 
      * @return the number of expired entries that were removed
      */
     public int cleanupExpired() {
+        // Only cleanup entries with TTL that have expired (ignore NULL TTL entries)
         String sql = "DELETE FROM " + TABLE_NAME +
-                     " WHERE (updated_at + (ttl_seconds * interval '1 second')) <= now()";
+                     " WHERE ttl_seconds IS NOT NULL AND (updated_at + (ttl_seconds * interval '1 second')) <= now()";
 
         try (Connection conn = getValidatedConnection();
              Statement stmt = conn.createStatement()) {

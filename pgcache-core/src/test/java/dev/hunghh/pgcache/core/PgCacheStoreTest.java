@@ -94,7 +94,7 @@ class PgCacheStoreTest {
         when(resultSet.getString("value")).thenReturn(jsonValue);
         when(resultSet.getTimestamp("updated_at")).thenReturn(
             Timestamp.from(Instant.now().minusSeconds(30)));
-        when(resultSet.getInt("ttl_seconds")).thenReturn(60);
+        when(resultSet.getObject("ttl_seconds", Integer.class)).thenReturn(60);
 
         // Act
         Optional<TestObject> result = cacheStore.get(key, TestObject.class);
@@ -133,7 +133,7 @@ class PgCacheStoreTest {
         when(resultSet.getString("value")).thenReturn(jsonValue);
         when(resultSet.getTimestamp("updated_at")).thenReturn(
             Timestamp.from(Instant.now().minusSeconds(120)));
-        when(resultSet.getInt("ttl_seconds")).thenReturn(60);
+        when(resultSet.getObject("ttl_seconds", Integer.class)).thenReturn(60);
 
         // Create a second prepared statement for the evict call
         PreparedStatement evictStatement = mock(PreparedStatement.class);
@@ -175,6 +175,52 @@ class PgCacheStoreTest {
         // Verify TTL
         verify(preparedStatement).setInt(3, 300); // 5 minutes = 300 seconds
         verify(preparedStatement).executeUpdate();
+    }
+
+    @Test
+    void testPutWithoutTTL() throws Exception {
+        // Arrange
+        String key = "test-key";
+        TestObject value = new TestObject("test-value", 123);
+        String jsonValue = realObjectMapper.writeValueAsString(value);
+
+        // Act
+        cacheStore.put(key, value);
+
+        // Assert
+        ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(connection, times(1)).prepareStatement(sqlCaptor.capture());
+        
+        String capturedSql = sqlCaptor.getValue();
+        assertTrue(capturedSql.contains("ttl_seconds) VALUES (?, ?::jsonb, now(), NULL)"));
+        
+        verify(preparedStatement).setString(1, key);
+        verify(preparedStatement).setString(2, jsonValue);
+        verify(preparedStatement, never()).setInt(anyInt(), anyInt()); // No TTL parameter
+        verify(preparedStatement).executeUpdate();
+    }
+
+    @Test
+    void testGetWithNullTTL() throws Exception {
+        // Arrange
+        String key = "test-key";
+        TestObject expectedObject = new TestObject("test-value", 123);
+        String jsonValue = realObjectMapper.writeValueAsString(expectedObject);
+
+        when(preparedStatement.executeQuery()).thenReturn(resultSet);
+        when(resultSet.next()).thenReturn(true);
+        when(resultSet.getString("value")).thenReturn(jsonValue);
+        when(resultSet.getTimestamp("updated_at")).thenReturn(
+            Timestamp.from(Instant.now().minusSeconds(3600))); // Old entry
+        when(resultSet.getObject("ttl_seconds", Integer.class)).thenReturn(null); // No TTL
+
+        // Act
+        Optional<TestObject> result = cacheStore.get(key, TestObject.class);
+
+        // Assert - should return the value since NULL TTL means permanent
+        assertTrue(result.isPresent());
+        assertEquals("test-value", result.get().getName());
+        assertEquals(123, result.get().getValue());
     }
 
     @Test

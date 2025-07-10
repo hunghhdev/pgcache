@@ -212,4 +212,43 @@ class PgCacheStoreTTLCleanupTest {
         configuredCache.clear();
         configuredCache.shutdown();
     }
+
+    @Test
+    void testCleanupExpiredIgnoresPermanentEntries() {
+        // Add both temporary and permanent entries
+        cache.put("temp1", "value1", Duration.ofSeconds(1));
+        cache.put("temp2", "value2", Duration.ofSeconds(1));
+        cache.put("permanent1", "perm1"); // No TTL
+        cache.put("permanent2", "perm2"); // No TTL
+
+        // Verify all entries exist
+        assertEquals(4, cache.size());
+        assertTrue(cache.get("temp1", String.class).isPresent());
+        assertTrue(cache.get("temp2", String.class).isPresent());
+        assertTrue(cache.get("permanent1", String.class).isPresent());
+        assertTrue(cache.get("permanent2", String.class).isPresent());
+
+        // Wait for temporary entries to expire
+        try {
+            Thread.sleep(2000); // 2 seconds
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            fail("Test interrupted");
+        }
+
+        // Manual cleanup should only remove expired entries, not permanent ones
+        int cleanedUp = cache.cleanupExpired();
+        assertEquals(2, cleanedUp, "Should only clean up temporary expired entries");
+        
+        // Verify permanent entries are still there
+        assertTrue(cache.get("permanent1", String.class).isPresent());
+        assertTrue(cache.get("permanent2", String.class).isPresent());
+        
+        // Verify temporary entries are gone
+        assertFalse(cache.get("temp1", String.class).isPresent());
+        assertFalse(cache.get("temp2", String.class).isPresent());
+        
+        // Size should reflect only permanent entries
+        assertEquals(2, cache.size());
+    }
 }

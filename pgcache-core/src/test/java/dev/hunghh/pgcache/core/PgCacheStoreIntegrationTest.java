@@ -136,6 +136,66 @@ class PgCacheStoreIntegrationTest {
         assertFalse(cacheStore.get(key, TestUser.class).isPresent());
     }
 
+    @Test
+    void testPutWithoutTTL() {
+        // Arrange
+        String key = "permanent-key-" + UUID.randomUUID();
+        TestUser user = new TestUser("Alice", 25);
+
+        // Act
+        cacheStore.put(key, user); // No TTL - permanent entry
+
+        // Assert
+        Optional<TestUser> result = cacheStore.get(key, TestUser.class);
+        assertTrue(result.isPresent());
+        assertEquals("Alice", result.get().name);
+        assertEquals(25, result.get().age);
+    }
+
+    @Test
+    void testPermanentEntryDoesNotExpire() throws InterruptedException {
+        // Arrange
+        String key = "permanent-key-" + UUID.randomUUID();
+        TestUser user = new TestUser("Bob", 30);
+
+        // Act - Put without TTL
+        cacheStore.put(key, user);
+
+        // Wait a bit to simulate time passing
+        Thread.sleep(1000);
+
+        // Assert - Entry should still be there
+        Optional<TestUser> result = cacheStore.get(key, TestUser.class);
+        assertTrue(result.isPresent());
+        assertEquals("Bob", result.get().name);
+        assertEquals(30, result.get().age);
+    }
+
+    @Test
+    void testSizeCountsPermanentEntries() {
+        // Arrange
+        String tempKey = "temp-key-" + UUID.randomUUID();
+        String permKey = "perm-key-" + UUID.randomUUID();
+        TestUser user = new TestUser("Charlie", 35);
+
+        // Act
+        cacheStore.put(tempKey, user, Duration.ofSeconds(1)); // Temporary
+        cacheStore.put(permKey, user); // Permanent
+
+        // Assert
+        assertEquals(2, cacheStore.size());
+
+        // Wait for temp entry to expire
+        try {
+            Thread.sleep(2000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        // Only permanent entry should remain in count
+        assertEquals(1, cacheStore.size());
+    }
+
     static class TestUser {
         private String name;
         private int age;
