@@ -52,10 +52,6 @@ class PgCacheStoreTest {
         lenient().when(dataSource.getConnection()).thenReturn(connection);
         lenient().when(connection.createStatement()).thenReturn(statement);
         lenient().when(connection.prepareStatement(anyString())).thenReturn(preparedStatement);
-        
-        // Mock connection validation methods
-        lenient().when(connection.isClosed()).thenReturn(false);
-        lenient().when(connection.isValid(anyInt())).thenReturn(true);
 
         // Use a real ObjectMapper for serialization tests
         realObjectMapper = new ObjectMapper();

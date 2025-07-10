@@ -55,8 +55,7 @@ public class PgCacheStore implements PgCacheClient {
     // Thread-safe initialization flag using double-checked locking pattern
     private volatile boolean tableInitialized = false;
 
-    // Connection timeout and retry configuration
-    private static final int CONNECTION_TIMEOUT_SECONDS = 10;
+    // Connection retry configuration
     private static final int MAX_RETRY_ATTEMPTS = 3;
     private static final int RETRY_DELAY_MS = 100;
 
@@ -381,30 +380,17 @@ public class PgCacheStore implements PgCacheClient {
     }
 
     /**
-     * Gets a validated connection from the DataSource with retry logic.
+     * Gets a connection from the DataSource with retry logic for transient failures.
      * 
-     * @return a valid database connection
-     * @throws PgCacheException if unable to obtain a valid connection after retries
+     * @return a database connection
+     * @throws SQLException if unable to obtain a connection after retries
      */
     private Connection getValidatedConnection() throws SQLException {
         SQLException lastException = null;
         
         for (int attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
             try {
-                Connection conn = dataSource.getConnection();
-                
-                // Validate connection with a simple query and timeout
-                if (isConnectionValid(conn)) {
-                    return conn;
-                } else {
-                    // Connection is not valid, close it
-                    try {
-                        conn.close();
-                    } catch (SQLException e) {
-                        logger.warn("Failed to close invalid connection", e);
-                    }
-                    throw new SQLException("Connection validation failed");
-                }
+                return dataSource.getConnection();
                 
             } catch (SQLException e) {
                 lastException = e;
@@ -421,37 +407,7 @@ public class PgCacheStore implements PgCacheClient {
             }
         }
         
-        throw new SQLException("Failed to obtain valid connection after " + MAX_RETRY_ATTEMPTS + " attempts", lastException);
-    }
-
-    /**
-     * Validates if a connection is usable.
-     * 
-     * @param conn the connection to validate
-     * @return true if the connection is valid, false otherwise
-     */
-    private boolean isConnectionValid(Connection conn) {
-        if (conn == null) {
-            return false;
-        }
-        
-        try {
-            // First check if connection is closed
-            if (conn.isClosed()) {
-                return false;
-            }
-            
-            // Use the JDBC 4.0 isValid method with timeout
-            return conn.isValid(CONNECTION_TIMEOUT_SECONDS);
-        } catch (SQLException e) {
-            logger.debug("Connection validation failed: {}", e.getMessage());
-            return false;
-        } catch (Exception e) {
-            // Handle any other exceptions (e.g., from mocked connections in tests)
-            logger.debug("Connection validation error: {}", e.getMessage());
-            // For test environments with mocks, assume connection is valid if it exists
-            return true;
-        }
+        throw new SQLException("Failed to obtain connection after " + MAX_RETRY_ATTEMPTS + " attempts", lastException);
     }
 
 
