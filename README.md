@@ -1,7 +1,7 @@
 # PgCache
 
 [![Java](https://img.shields.io/badge/Java-11%2B-blue.svg)](https://www.oracle.com/java/)
-[![Maven Central](https://img.shields.io/badge/Maven%20Central-Coming%20Soon-orange.svg)](https://search.maven.org/)
+[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.0.0-green.svg)](https://search.maven.org/artifact/io.github.hunghhdev/pgcache-core)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 A production-ready Java library for using PostgreSQL as a cache backend, providing both standalone API and Spring Framework integration.
@@ -43,7 +43,7 @@ This project is organized as a multi-module Maven project:
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-core</artifactId>
-  <version>1.0-SNAPSHOT</version>
+  <version>1.0.0</version>
 </dependency>
 ```
 
@@ -85,7 +85,7 @@ int cacheSize = cacheClient.size();
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-spring</artifactId>
-  <version>1.0-SNAPSHOT</version>
+  <version>1.0.0</version>
 </dependency>
 ```
 
@@ -142,22 +142,6 @@ pgcache:
       ttl: PT2H                 # 2 hour TTL for users cache
     products:
       ttl: PT15M                # 15 minute TTL for products
-```
-    .build();
-
-// Store data in cache
-User user = new User("john.doe", "John Doe", 30);
-cacheClient.put("user:123", user, Duration.ofMinutes(30));
-
-// Retrieve data from cache
-Optional<User> cachedUser = cacheClient.get("user:123", User.class);
-cachedUser.ifPresent(u -> System.out.println("Found user: " + u.getName()));
-
-// Remove from cache
-cacheClient.evict("user:123");
-
-// Get cache size (non-expired entries)
-int cacheSize = cacheClient.size();
 ```
 
 For database schema details and implementation specifics, please refer to the [pgcache-core module README](pgcache-core/README.md).
