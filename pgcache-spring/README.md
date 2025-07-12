@@ -18,7 +18,7 @@ Spring Framework integration for [PgCache](../pgcache-core/README.md), providing
 
 ```xml
 <dependency>
-    <groupId>dev.hunghh</groupId>
+    <groupId>io.github.hunghhdev</groupId>
     <artifactId>pgcache-spring</artifactId>
     <version>1.0-SNAPSHOT</version>
 </dependency>

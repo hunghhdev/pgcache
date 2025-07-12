@@ -41,7 +41,7 @@ This project is organized as a multi-module Maven project:
 
 ```xml
 <dependency>
-  <groupId>dev.hunghh</groupId>
+  <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-core</artifactId>
   <version>1.0-SNAPSHOT</version>
 </dependency>
@@ -83,7 +83,7 @@ int cacheSize = cacheClient.size();
 
 ```xml
 <dependency>
-  <groupId>dev.hunghh</groupId>
+  <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-spring</artifactId>
   <version>1.0-SNAPSHOT</version>
 </dependency>
