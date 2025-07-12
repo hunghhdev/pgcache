@@ -6,7 +6,7 @@
 
     <groupId>io.github.hunghhdev</groupId>
     <artifactId>pgcache</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <version>1.0.0</version>
     <packaging>pom</packaging>
 
     <name>PgCache</name>
@@ -61,17 +61,17 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <!-- Dependency versions -->
-        <postgresql.version>42.6.0</postgresql.version>
-        <jackson.version>2.15.2</jackson.version>
-        <slf4j.version>2.0.9</slf4j.version>
-        <junit.version>5.10.0</junit.version>
-        <mockito.version>5.4.0</mockito.version>
-        <testcontainers.version>1.18.3</testcontainers.version>
+        <postgresql.version>42.5.4</postgresql.version>
+        <jackson.version>2.14.2</jackson.version>
+        <slf4j.version>1.7.36</slf4j.version>
+        <junit.version>5.9.3</junit.version>
+        <mockito.version>4.11.0</mockito.version>
+        <testcontainers.version>1.17.6</testcontainers.version>
         <hikaricp.version>5.0.1</hikaricp.version>
         
         <!-- Spring versions -->
-        <spring.boot.version>3.2.0</spring.boot.version>
-        <spring.framework.version>6.1.0</spring.framework.version>
+        <spring.boot.version>2.6.13</spring.boot.version>
+        <spring.framework.version>5.3.21</spring.framework.version>
     </properties>
 
     <dependencyManagement>
@@ -210,6 +210,31 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.1.2</version>
+                </plugin>
+
+                <!-- Maven Enforcer Plugin -->
+                <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <execution>
+                    <id>enforce-maven</id>
+                    <goals>
+                        <goal>enforce</goal>
+                    </goals>
+                    <configuration>
+                        <rules>
+                        <requireMavenVersion>
+                            <version>3.6.3</version>
+                        </requireMavenVersion>
+                        <requireJavaVersion>
+                            <version>11</version>
+                        </requireJavaVersion>
+                        </rules>
+                    </configuration>
+                    </execution>
+                </executions>
                 </plugin>
 
                 <!-- Source JAR -->

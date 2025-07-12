@@ -2,13 +2,13 @@ package io.github.hunghhdev.pgcache.spring;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.cache.CacheManager;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
 import javax.sql.DataSource;
 
@@ -16,7 +16,7 @@ import javax.sql.DataSource;
  * Auto-configuration for PgCache Spring integration.
  * Automatically configures PgCacheManager when DataSource is available.
  */
-@AutoConfiguration
+@Configuration
 @ConditionalOnClass({DataSource.class, CacheManager.class})
 @ConditionalOnProperty(prefix = "pgcache", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(PgCacheProperties.class)
