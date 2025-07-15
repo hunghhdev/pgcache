@@ -40,11 +40,11 @@
     <distributionManagement>
         <repository>
             <id>central</id>
-            <url>https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/</url>
+            <url>https://central.sonatype.com/api/v1/publisher/deployments</url>
         </repository>
         <snapshotRepository>
             <id>central</id>
-            <url>https://central.sonatype.com/repository/maven-snapshots/</url>
+            <url>https://central.sonatype.com/api/v1/publisher/deployments</url>
         </snapshotRepository>
     </distributionManagement>
 
@@ -296,8 +296,8 @@
                 <extensions>true</extensions>
                 <configuration>
                     <publishingServerId>central</publishingServerId>
-                    <autoPublish>true</autoPublish>
-                    <waitUntil>published</waitUntil>
+                    <autoPublish>false</autoPublish>
+                    <waitUntil>validated</waitUntil>
                 </configuration>
                 </plugin>
             </plugins>
@@ -322,8 +322,8 @@
                         <artifactId>maven-gpg-plugin</artifactId>
                     </plugin>
                     <plugin>
-                        <groupId>org.sonatype.plugins</groupId>
-                        <artifactId>nexus-staging-maven-plugin</artifactId>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
                     </plugin>
                 </plugins>
             </build>
