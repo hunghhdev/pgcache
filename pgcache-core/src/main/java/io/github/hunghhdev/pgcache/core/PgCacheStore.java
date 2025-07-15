@@ -40,7 +40,9 @@ public class PgCacheStore implements PgCacheClient {
         "  key TEXT PRIMARY KEY, " +
         "  value JSONB NOT NULL, " +
         "  updated_at TIMESTAMP DEFAULT now(), " +
-        "  ttl_seconds INT" +
+        "  ttl_seconds INT, " +
+        "  ttl_policy VARCHAR(10) DEFAULT 'ABSOLUTE', " +
+        "  last_accessed TIMESTAMP DEFAULT now()" +
         ")";
 
     private static final String CREATE_INDEX_SQL =
@@ -55,6 +57,11 @@ public class PgCacheStore implements PgCacheClient {
         "CREATE INDEX IF NOT EXISTS " + TABLE_NAME + "_ttl_idx " +
         "ON " + TABLE_NAME + " (updated_at, ttl_seconds) " +
         "WHERE ttl_seconds IS NOT NULL";
+
+    private static final String CREATE_SLIDING_TTL_INDEX_SQL =
+        "CREATE INDEX IF NOT EXISTS " + TABLE_NAME + "_sliding_ttl_idx " +
+        "ON " + TABLE_NAME + " (ttl_policy, last_accessed) " +
+        "WHERE ttl_policy = 'SLIDING'";
 
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
@@ -137,6 +144,8 @@ public class PgCacheStore implements PgCacheClient {
             stmt.execute(CREATE_GIN_INDEX_SQL);
             // Create TTL index for efficient expiration queries
             stmt.execute(CREATE_TTL_INDEX_SQL);
+            // Create sliding TTL index for efficient sliding TTL queries
+            stmt.execute(CREATE_SLIDING_TTL_INDEX_SQL);
 
             // Log table creation status
             if (!tableExists) {
@@ -168,85 +177,12 @@ public class PgCacheStore implements PgCacheClient {
 
     @Override
     public <T> Optional<T> get(String key, Class<T> clazz) {
-        if (key == null || key.isEmpty()) {
-            throw new PgCacheException("Cache key cannot be null or empty");
-        }
-
-        String sql = "SELECT value, updated_at, ttl_seconds FROM " + TABLE_NAME +
-                     " WHERE key = ?";
-
-        try (Connection conn = getValidatedConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-
-            stmt.setString(1, key);
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (!rs.next()) {
-                    return Optional.empty();
-                }
-
-                // Get the values
-                String jsonValue = rs.getString("value");
-                Instant updatedAt = rs.getTimestamp("updated_at").toInstant();
-                Integer ttlSeconds = rs.getObject("ttl_seconds", Integer.class); // Handle NULL
-
-                // Check if expired (only if TTL is set)
-                if (ttlSeconds != null && isExpired(updatedAt, ttlSeconds)) {
-                    // Safely evict expired key - don't let eviction failures affect the get operation
-                    try {
-                        evict(key);
-                    } catch (Exception evictException) {
-                        logger.warn("Failed to evict expired key '{}', continuing with empty result", key, evictException);
-                    }
-                    return Optional.empty();
-                }
-
-                // Deserialize and return
-                T value = objectMapper.readValue(jsonValue, clazz);
-                return Optional.of(value);
-            }
-        } catch (Exception e) {
-            throw new PgCacheException("Failed to get value from cache", e);
-        }
+        return get(key, clazz, true); // Default to refreshing TTL for sliding TTL entries
     }
 
     @Override
     public <T> void put(String key, T value, Duration ttl) {
-        if (key == null || key.isEmpty()) {
-            throw new PgCacheException("Cache key cannot be null or empty");
-        }
-        if (value == null) {
-            throw new PgCacheException("Cache value cannot be null");
-        }
-        if (ttl == null || ttl.isNegative() || ttl.isZero()) {
-            throw new PgCacheException("TTL must be positive");
-        }
-
-        int ttlSeconds = (int) ttl.getSeconds();
-
-        // SQL for upsert (PostgreSQL specific)
-        String sql = "INSERT INTO " + TABLE_NAME +
-                     " (key, value, updated_at, ttl_seconds) " +
-                     "VALUES (?, ?::jsonb, now(), ?) " +
-                     "ON CONFLICT (key) DO UPDATE SET " +
-                     "value = EXCLUDED.value, " +
-                     "updated_at = EXCLUDED.updated_at, " +
-                     "ttl_seconds = EXCLUDED.ttl_seconds";
-
-        try (Connection conn = getValidatedConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-
-            // Serialize the value to JSON
-            String jsonValue = objectMapper.writeValueAsString(value);
-
-            stmt.setString(1, key);
-            stmt.setString(2, jsonValue);
-            stmt.setInt(3, ttlSeconds);
-
-            stmt.executeUpdate();
-        } catch (Exception e) {
-            throw new PgCacheException("Failed to put value in cache", e);
-        }
+        put(key, value, ttl, TTLPolicy.ABSOLUTE); // Default to ABSOLUTE for backward compatibility
     }
 
     @Override
@@ -275,6 +211,51 @@ public class PgCacheStore implements PgCacheClient {
 
             stmt.setString(1, key);
             stmt.setString(2, jsonValue);
+
+            stmt.executeUpdate();
+        } catch (Exception e) {
+            throw new PgCacheException("Failed to put value in cache", e);
+        }
+    }
+
+    @Override
+    public <T> void put(String key, T value, Duration ttl, TTLPolicy policy) {
+        if (key == null || key.isEmpty()) {
+            throw new PgCacheException("Cache key cannot be null or empty");
+        }
+        if (value == null) {
+            throw new PgCacheException("Cache value cannot be null");
+        }
+        if (ttl == null || ttl.isNegative() || ttl.isZero()) {
+            throw new PgCacheException("TTL must be positive");
+        }
+        if (policy == null) {
+            throw new PgCacheException("TTL policy cannot be null");
+        }
+
+        int ttlSeconds = (int) ttl.getSeconds();
+
+        // SQL for upsert (PostgreSQL specific) with sliding TTL support
+        String sql = "INSERT INTO " + TABLE_NAME +
+                     " (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
+                     "VALUES (?, ?::jsonb, now(), ?, ?, now()) " +
+                     "ON CONFLICT (key) DO UPDATE SET " +
+                     "value = EXCLUDED.value, " +
+                     "updated_at = EXCLUDED.updated_at, " +
+                     "ttl_seconds = EXCLUDED.ttl_seconds, " +
+                     "ttl_policy = EXCLUDED.ttl_policy, " +
+                     "last_accessed = EXCLUDED.last_accessed";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            // Serialize the value to JSON
+            String jsonValue = objectMapper.writeValueAsString(value);
+
+            stmt.setString(1, key);
+            stmt.setString(2, jsonValue);
+            stmt.setInt(3, ttlSeconds);
+            stmt.setString(4, policy.name());
 
             stmt.executeUpdate();
         } catch (Exception e) {
@@ -562,5 +543,200 @@ public class PgCacheStore implements PgCacheClient {
         throw new SQLException("Failed to obtain connection after " + MAX_RETRY_ATTEMPTS + " attempts", lastException);
     }
 
+    @Override
+    public <T> Optional<T> get(String key, Class<T> clazz, boolean refreshTTL) {
+        if (key == null || key.isEmpty()) {
+            throw new PgCacheException("Cache key cannot be null or empty");
+        }
 
+        String sql = "SELECT value, updated_at, ttl_seconds, ttl_policy, last_accessed FROM " + TABLE_NAME +
+                     " WHERE key = ?";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, key);
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (!rs.next()) {
+                    return Optional.empty();
+                }
+
+                // Get the values
+                String jsonValue = rs.getString("value");
+                Instant updatedAt = rs.getTimestamp("updated_at").toInstant();
+                Integer ttlSeconds = rs.getObject("ttl_seconds", Integer.class);
+                String ttlPolicyStr = rs.getString("ttl_policy");
+                
+                // Handle null last_accessed for backward compatibility
+                Instant lastAccessed = null;
+                java.sql.Timestamp lastAccessedTimestamp = rs.getTimestamp("last_accessed");
+                if (lastAccessedTimestamp != null) {
+                    lastAccessed = lastAccessedTimestamp.toInstant();
+                } else {
+                    // For backward compatibility, use updated_at if last_accessed is null
+                    lastAccessed = updatedAt;
+                }
+
+                // Parse TTL policy (default to ABSOLUTE for backward compatibility)
+                TTLPolicy ttlPolicy = TTLPolicy.ABSOLUTE;
+                if (ttlPolicyStr != null) {
+                    try {
+                        ttlPolicy = TTLPolicy.valueOf(ttlPolicyStr);
+                    } catch (IllegalArgumentException e) {
+                        logger.warn("Invalid TTL policy '{}' for key '{}', defaulting to ABSOLUTE", ttlPolicyStr, key);
+                    }
+                }
+
+                // Check if expired based on TTL policy
+                if (ttlSeconds != null) {
+                    boolean expired = false;
+                    if (ttlPolicy == TTLPolicy.SLIDING) {
+                        // For sliding TTL, check against last_accessed time
+                        expired = isExpired(lastAccessed, ttlSeconds);
+                    } else {
+                        // For absolute TTL, check against updated_at time
+                        expired = isExpired(updatedAt, ttlSeconds);
+                    }
+
+                    if (expired) {
+                        // Safely evict expired key
+                        try {
+                            evict(key);
+                        } catch (Exception evictException) {
+                            logger.warn("Failed to evict expired key '{}', continuing with empty result", key, evictException);
+                        }
+                        return Optional.empty();
+                    }
+                }
+
+                // Update last_accessed timestamp for sliding TTL if refreshTTL is true
+                if (refreshTTL && ttlPolicy == TTLPolicy.SLIDING && ttlSeconds != null) {
+                    updateLastAccessed(key);
+                }
+
+                // Deserialize the value
+                T result = objectMapper.readValue(jsonValue, clazz);
+                return Optional.of(result);
+
+            } catch (Exception e) {
+                throw new PgCacheException("Failed to deserialize cached value", e);
+            }
+        } catch (SQLException e) {
+            throw new PgCacheException("Failed to get value from cache", e);
+        }
+    }
+
+    private void updateLastAccessed(String key) {
+        String sql = "UPDATE " + TABLE_NAME + " SET last_accessed = now() WHERE key = ?";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, key);
+            stmt.executeUpdate();
+
+        } catch (SQLException e) {
+            logger.warn("Failed to update last_accessed timestamp for key '{}'", key, e);
+        }
+    }
+
+    @Override
+    public Optional<Duration> getRemainingTTL(String key) {
+        if (key == null || key.isEmpty()) {
+            throw new PgCacheException("Cache key cannot be null or empty");
+        }
+
+        String sql = "SELECT updated_at, ttl_seconds, ttl_policy, last_accessed FROM " + TABLE_NAME +
+                     " WHERE key = ?";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, key);
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (!rs.next()) {
+                    return Optional.empty();
+                }
+
+                Integer ttlSeconds = rs.getObject("ttl_seconds", Integer.class);
+                if (ttlSeconds == null) {
+                    return Optional.empty(); // No TTL set
+                }
+
+                Instant updatedAt = rs.getTimestamp("updated_at").toInstant();
+                String ttlPolicyStr = rs.getString("ttl_policy");
+                
+                // Handle null last_accessed for backward compatibility
+                Instant lastAccessed = null;
+                java.sql.Timestamp lastAccessedTimestamp = rs.getTimestamp("last_accessed");
+                if (lastAccessedTimestamp != null) {
+                    lastAccessed = lastAccessedTimestamp.toInstant();
+                } else {
+                    // For backward compatibility, use updated_at if last_accessed is null
+                    lastAccessed = updatedAt;
+                }
+
+                // Parse TTL policy
+                TTLPolicy ttlPolicy = TTLPolicy.ABSOLUTE;
+                if (ttlPolicyStr != null) {
+                    try {
+                        ttlPolicy = TTLPolicy.valueOf(ttlPolicyStr);
+                    } catch (IllegalArgumentException e) {
+                        logger.warn("Invalid TTL policy '{}' for key '{}', defaulting to ABSOLUTE", ttlPolicyStr, key);
+                    }
+                }
+
+                // Calculate remaining TTL based on policy
+                Instant expirationTime;
+                if (ttlPolicy == TTLPolicy.SLIDING) {
+                    expirationTime = lastAccessed.plusSeconds(ttlSeconds);
+                } else {
+                    expirationTime = updatedAt.plusSeconds(ttlSeconds);
+                }
+
+                Duration remaining = Duration.between(Instant.now(), expirationTime);
+                return remaining.isNegative() ? Optional.empty() : Optional.of(remaining);
+
+            }
+        } catch (SQLException e) {
+            throw new PgCacheException("Failed to get remaining TTL from cache", e);
+        }
+    }
+
+    @Override
+    public Optional<TTLPolicy> getTTLPolicy(String key) {
+        if (key == null || key.isEmpty()) {
+            throw new PgCacheException("Cache key cannot be null or empty");
+        }
+
+        String sql = "SELECT ttl_policy FROM " + TABLE_NAME + " WHERE key = ?";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, key);
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (!rs.next()) {
+                    return Optional.empty();
+                }
+
+                String ttlPolicyStr = rs.getString("ttl_policy");
+                if (ttlPolicyStr == null) {
+                    return Optional.of(TTLPolicy.ABSOLUTE); // Default for backward compatibility
+                }
+
+                try {
+                    return Optional.of(TTLPolicy.valueOf(ttlPolicyStr));
+                } catch (IllegalArgumentException e) {
+                    logger.warn("Invalid TTL policy '{}' for key '{}', returning ABSOLUTE", ttlPolicyStr, key);
+                    return Optional.of(TTLPolicy.ABSOLUTE);
+                }
+            }
+        } catch (SQLException e) {
+            throw new PgCacheException("Failed to get TTL policy from cache", e);
+        }
+    }
 }
