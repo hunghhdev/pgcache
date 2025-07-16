@@ -201,7 +201,8 @@ public class PgCacheProperties {
                 effectiveAllowNullValues,
                 effectiveTableName,
                 effectiveCleanup.isEnabled(),
-                effectiveCleanup.getInterval()
+                effectiveCleanup.getInterval(),
+                io.github.hunghhdev.pgcache.core.TTLPolicy.ABSOLUTE
             );
         }
     }
@@ -215,7 +216,8 @@ public class PgCacheProperties {
             allowNullValues,
             tableName,
             backgroundCleanup.isEnabled(),
-            backgroundCleanup.getInterval()
+            backgroundCleanup.getInterval(),
+            io.github.hunghhdev.pgcache.core.TTLPolicy.ABSOLUTE
         );
     }
 }

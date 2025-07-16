@@ -1,6 +1,7 @@
 package io.github.hunghhdev.pgcache.spring;
 
 import io.github.hunghhdev.pgcache.core.PgCacheStore;
+import io.github.hunghhdev.pgcache.core.TTLPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cache.Cache;
@@ -165,7 +166,7 @@ public class PgCacheManager implements CacheManager {
             PgCacheStore cacheStore = builder.build();
             
             // Create the Spring Cache wrapper
-            return new PgCache(name, cacheStore, config.getDefaultTtl(), config.isAllowNullValues());
+            return new PgCache(name, cacheStore, config.getDefaultTtl(), config.isAllowNullValues(), config.getTtlPolicy());
             
         } catch (Exception e) {
             logger.error("Failed to create cache '{}': {}", name, e.getMessage());
@@ -182,14 +183,17 @@ public class PgCacheManager implements CacheManager {
         private final String tableName;
         private final boolean backgroundCleanupEnabled;
         private final Duration backgroundCleanupInterval;
+        private final TTLPolicy ttlPolicy;
         
         public PgCacheConfiguration(Duration defaultTtl, boolean allowNullValues, String tableName,
-                                  boolean backgroundCleanupEnabled, Duration backgroundCleanupInterval) {
+                                  boolean backgroundCleanupEnabled, Duration backgroundCleanupInterval,
+                                  TTLPolicy ttlPolicy) {
             this.defaultTtl = defaultTtl;
             this.allowNullValues = allowNullValues;
             this.tableName = tableName != null ? tableName : "pg_cache";
             this.backgroundCleanupEnabled = backgroundCleanupEnabled;
             this.backgroundCleanupInterval = backgroundCleanupInterval;
+            this.ttlPolicy = ttlPolicy != null ? ttlPolicy : TTLPolicy.ABSOLUTE;
         }
         
         public Duration getDefaultTtl() {
@@ -212,6 +216,10 @@ public class PgCacheManager implements CacheManager {
             return backgroundCleanupInterval;
         }
         
+        public TTLPolicy getTtlPolicy() {
+            return ttlPolicy;
+        }
+        
         /**
          * Create a builder for PgCacheConfiguration.
          */
@@ -228,6 +236,7 @@ public class PgCacheManager implements CacheManager {
             private String tableName = "pg_cache";
             private boolean backgroundCleanupEnabled = false;
             private Duration backgroundCleanupInterval = Duration.ofMinutes(30);
+            private TTLPolicy ttlPolicy = TTLPolicy.ABSOLUTE;
             
             public Builder defaultTtl(Duration defaultTtl) {
                 this.defaultTtl = defaultTtl;
@@ -254,9 +263,14 @@ public class PgCacheManager implements CacheManager {
                 return this;
             }
             
+            public Builder ttlPolicy(TTLPolicy ttlPolicy) {
+                this.ttlPolicy = ttlPolicy;
+                return this;
+            }
+            
             public PgCacheConfiguration build() {
                 return new PgCacheConfiguration(defaultTtl, allowNullValues, tableName,
-                                               backgroundCleanupEnabled, backgroundCleanupInterval);
+                                               backgroundCleanupEnabled, backgroundCleanupInterval, ttlPolicy);
             }
         }
     }

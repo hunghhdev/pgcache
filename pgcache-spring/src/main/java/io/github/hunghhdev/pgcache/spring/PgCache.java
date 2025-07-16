@@ -1,6 +1,7 @@
 package io.github.hunghhdev.pgcache.spring;
 
 import io.github.hunghhdev.pgcache.core.PgCacheStore;
+import io.github.hunghhdev.pgcache.core.TTLPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cache.Cache;
@@ -21,6 +22,7 @@ public class PgCache implements Cache {
     private final PgCacheStore cacheStore;
     private final Duration defaultTtl;
     private final boolean allowNullValues;
+    private final TTLPolicy ttlPolicy;
     
     /**
      * Create a new PgCache instance.
@@ -29,12 +31,14 @@ public class PgCache implements Cache {
      * @param cacheStore the underlying cache store
      * @param defaultTtl default TTL for cache entries (null for permanent entries)
      * @param allowNullValues whether to allow null values
+     * @param ttlPolicy the TTL policy (absolute or sliding)
      */
-    public PgCache(String name, PgCacheStore cacheStore, Duration defaultTtl, boolean allowNullValues) {
+    public PgCache(String name, PgCacheStore cacheStore, Duration defaultTtl, boolean allowNullValues, TTLPolicy ttlPolicy) {
         this.name = name;
         this.cacheStore = cacheStore;
         this.defaultTtl = defaultTtl;
         this.allowNullValues = allowNullValues;
+        this.ttlPolicy = ttlPolicy != null ? ttlPolicy : TTLPolicy.ABSOLUTE;
     }
     
     @Override
@@ -55,7 +59,9 @@ public class PgCache implements Cache {
         
         try {
             String keyStr = toKeyString(key);
-            Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class);
+            // For sliding TTL, we need to refresh the TTL on access
+            boolean refreshTtl = ttlPolicy == TTLPolicy.SLIDING;
+            Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, refreshTtl);
             
             if (!optionalValue.isPresent()) {
                 return null;
@@ -77,7 +83,9 @@ public class PgCache implements Cache {
         
         try {
             String keyStr = toKeyString(key);
-            Optional<T> optionalValue = cacheStore.get(keyStr, type);
+            // For sliding TTL, we need to refresh the TTL on access
+            boolean refreshTtl = ttlPolicy == TTLPolicy.SLIDING;
+            Optional<T> optionalValue = cacheStore.get(keyStr, type, refreshTtl);
             return optionalValue.orElse(null);
         } catch (Exception e) {
             logger.warn("Failed to get value from cache '{}' for key '{}' with type {}: {}", 
@@ -97,7 +105,9 @@ public class PgCache implements Cache {
             String keyStr = toKeyString(key);
             
             // Try to get from cache first
-            Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class);
+            // For sliding TTL, we need to refresh the TTL on access
+            boolean refreshTtl = ttlPolicy == TTLPolicy.SLIDING;
+            Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, refreshTtl);
             if (optionalValue.isPresent()) {
                 return (T) optionalValue.get();
             }
@@ -109,7 +119,7 @@ public class PgCache implements Cache {
                 // Store in cache
                 if (value != null || allowNullValues) {
                     if (defaultTtl != null) {
-                        cacheStore.put(keyStr, value, defaultTtl);
+                        cacheStore.put(keyStr, value, defaultTtl, ttlPolicy);
                     } else {
                         cacheStore.put(keyStr, value);
                     }
@@ -140,7 +150,7 @@ public class PgCache implements Cache {
             String keyStr = toKeyString(key);
             
             if (defaultTtl != null) {
-                cacheStore.put(keyStr, value, defaultTtl);
+                cacheStore.put(keyStr, value, defaultTtl, ttlPolicy);
             } else {
                 cacheStore.put(keyStr, value);
             }
@@ -261,6 +271,115 @@ public class PgCache implements Cache {
         } catch (Exception e) {
             logger.warn("Failed to cleanup expired entries in cache '{}': {}", name, e.getMessage());
         }
+    }
+    
+    /**
+     * Get value with option to refresh TTL (for sliding TTL).
+     *
+     * @param key the cache key
+     * @param type the expected type of the value
+     * @param refreshTTL whether to refresh TTL on access (for sliding TTL)
+     * @return the cached value or null if not found
+     */
+    public <T> T get(Object key, Class<T> type, boolean refreshTTL) {
+        if (key == null) {
+            return null;
+        }
+        
+        try {
+            String keyStr = toKeyString(key);
+            Optional<T> optionalValue = cacheStore.get(keyStr, type, refreshTTL);
+            return optionalValue.orElse(null);
+        } catch (Exception e) {
+            logger.warn("Failed to get value from cache '{}' for key '{}' with type {} and refreshTTL={}: {}", 
+                       name, key, type.getSimpleName(), refreshTTL, e.getMessage());
+            return null;
+        }
+    }
+    
+    /**
+     * Put value with explicit TTL policy.
+     *
+     * @param key the cache key
+     * @param value the value to cache
+     * @param ttl the TTL duration
+     * @param ttlPolicy the TTL policy (absolute or sliding)
+     */
+    public void put(Object key, Object value, Duration ttl, TTLPolicy ttlPolicy) {
+        if (key == null) {
+            throw new IllegalArgumentException("Cache key cannot be null");
+        }
+        
+        if (value == null && !allowNullValues) {
+            return;
+        }
+        
+        try {
+            String keyStr = toKeyString(key);
+            cacheStore.put(keyStr, value, ttl, ttlPolicy);
+        } catch (Exception e) {
+            logger.warn("Failed to put value into cache '{}' for key '{}': {}", name, key, e.getMessage());
+        }
+    }
+    
+    /**
+     * Put value with explicit TTL (using default TTL policy).
+     *
+     * @param key the cache key
+     * @param value the value to cache
+     * @param ttl the TTL duration
+     */
+    public void put(Object key, Object value, Duration ttl) {
+        put(key, value, ttl, ttlPolicy);
+    }
+    
+    /**
+     * Get remaining TTL for a cache entry.
+     *
+     * @param key the cache key
+     * @return the remaining TTL or empty if not found or permanent
+     */
+    public Optional<Duration> getRemainingTTL(Object key) {
+        if (key == null) {
+            return Optional.empty();
+        }
+        
+        try {
+            String keyStr = toKeyString(key);
+            return cacheStore.getRemainingTTL(keyStr);
+        } catch (Exception e) {
+            logger.warn("Failed to get remaining TTL for cache '{}' key '{}': {}", name, key, e.getMessage());
+            return Optional.empty();
+        }
+    }
+    
+    /**
+     * Get TTL policy for a cache entry.
+     *
+     * @param key the cache key
+     * @return the TTL policy or empty if not found
+     */
+    public Optional<TTLPolicy> getTTLPolicy(Object key) {
+        if (key == null) {
+            return Optional.empty();
+        }
+        
+        try {
+            String keyStr = toKeyString(key);
+            return cacheStore.getTTLPolicy(keyStr);
+        } catch (Exception e) {
+            logger.warn("Failed to get TTL policy for cache '{}' key '{}': {}", name, key, e.getMessage());
+            return Optional.empty();
+        }
+    }
+    
+    /**
+     * Get the default TTL policy for this cache.
+     *
+     * @return the default TTL policy
+     */
+    public TTLPolicy getDefaultTTLPolicy() {
+        return ttlPolicy;
     }
     
     /**
