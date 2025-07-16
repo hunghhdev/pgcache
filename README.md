@@ -4,28 +4,41 @@
 [![Maven Central](https://img.shields.io/badge/Maven%20Central-1.1.0-green.svg)](https://search.maven.org/artifact/io.github.hunghhdev/pgcache-core)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A production-ready Java library for using PostgreSQL as a cache backend, providing both standalone API and Spring Framework integration.
+A production-ready Java library for using PostgreSQL as a cache backend, providing both standalone API and Spring Framework integration with **sliding TTL support**.
+
+## 🎯 Why PgCache?
+
+**The first PostgreSQL cache library with sliding TTL support in the Java ecosystem!**
+
+### 🚀 Key Advantages
+- **🆕 Sliding TTL**: First PostgreSQL cache with Redis-like sliding expiration
+- **🔄 Unified Stack**: Use PostgreSQL for both data and cache - no Redis needed
+- **💾 Persistent Cache**: Survives restarts with configurable durability
+- **🔐 ACID Compliance**: Full transactional support when needed
+- **🎯 High Performance**: UNLOGGED tables with JSONB and GIN indexes
+- **🌱 Spring Ready**: Complete Spring Boot integration with zero configuration
 
 ## Features
 
 ### Core Features
-- Use PostgreSQL as a key-value cache storage with UNLOGGED tables for optimal performance
-- Simple API with get/put/evict operations and TTL (Time-To-Live) support
-- **🆕 Sliding TTL**: Expiration time resets on each access, keeping active entries cached longer
-- Automatic serialization/deserialization of Java objects to/from JSON
-- Leverages PostgreSQL's JSONB and GIN indexes for efficient storage and querying
-- Thread-safe operations with proper resource management
-- Background TTL cleanup with configurable intervals
-- Support for permanent entries (no expiration)
-- Java 11+ compatible
+- **PostgreSQL-based caching** with UNLOGGED tables for optimal performance
+- **Sliding TTL support** - expiration time resets on each access, keeping active entries cached longer
+- **Absolute TTL support** - traditional fixed expiration time
+- **Automatic JSON serialization** with PostgreSQL's JSONB type
+- **GIN indexes** for efficient querying and storage
+- **Thread-safe operations** with proper resource management
+- **Background TTL cleanup** with configurable intervals
+- **Permanent entries** support (no expiration)
+- **Java 11+ compatible**
 
 ### Spring Integration Features
-- **Spring Cache Abstraction**: Full implementation of Spring's `Cache` and `CacheManager` interfaces
+- **Spring Cache Abstraction**: Full `Cache` and `CacheManager` implementation
 - **Auto-Configuration**: Zero-configuration setup with Spring Boot
-- **Annotation Support**: Works with `@Cacheable`, `@CacheEvict`, `@CachePut`, and other Spring cache annotations
-- **Configuration Properties**: YAML/Properties configuration support
-- **Health Monitoring**: Spring Boot Actuator integration for health checks and metrics
-- **Multiple Cache Configuration**: Per-cache TTL and settings
+- **Annotation Support**: `@Cacheable`, `@CacheEvict`, `@CachePut`, etc.
+- **Properties Configuration**: YAML/Properties configuration support
+- **Health Monitoring**: Spring Boot Actuator integration
+- **Multiple Cache Configuration**: Per-cache TTL policies and settings
+- **Sliding TTL Configuration**: Configure sliding TTL per cache or globally
 
 ## Project Structure
 
@@ -137,7 +150,7 @@ public class UserService {
     
     @Cacheable("users")
     public User getUser(Long id) {
-        // This method will be cached automatically
+        // This method will be cached automatically with configured TTL policy
         return userRepository.findById(id);
     }
     
@@ -153,6 +166,47 @@ public class UserService {
 }
 ```
 
+#### 🆕 Advanced Spring Integration with Sliding TTL
+
+```java
+@Service
+public class UserService {
+    
+    @Autowired
+    private CacheManager cacheManager;
+    
+    public User getUserWithTTLControl(Long id) {
+        PgCache cache = (PgCache) cacheManager.getCache("users");
+        
+        // Check if user exists in cache first
+        User user = cache.get(id, User.class);
+        if (user != null) {
+            return user;
+        }
+        
+        // Load from database
+        user = userRepository.findById(id);
+        
+        // Cache with sliding TTL for active users
+        cache.put(id, user, Duration.ofHours(2), TTLPolicy.SLIDING);
+        
+        return user;
+    }
+    
+    public void monitorCacheStatus(Long id) {
+        PgCache cache = (PgCache) cacheManager.getCache("users");
+        
+        // Check remaining TTL
+        Optional<Duration> ttl = cache.getRemainingTTL(id);
+        ttl.ifPresent(t -> log.info("User {} expires in {} seconds", id, t.getSeconds()));
+        
+        // Check TTL policy
+        Optional<TTLPolicy> policy = cache.getTTLPolicy(id);
+        policy.ifPresent(p -> log.info("User {} uses {} TTL policy", id, p));
+    }
+}
+```
+
 #### Configuration
 
 ```yaml
@@ -164,29 +218,80 @@ pgcache:
     enabled: true               # Enable background cleanup
     interval: PT30M             # Cleanup every 30 minutes
   
-  # Per-cache configuration
+  # 🆕 Per-cache configuration with sliding TTL
   caches:
     users:
-      ttl: PT2H                 # 2 hour TTL for users cache
+      ttl: PT2H                 # 2 hours TTL for user cache
+      ttl-policy: SLIDING       # 🆕 Use sliding TTL for active users
+      allow-null-values: false  # Don't cache null users
+    sessions:
+      ttl: PT30M                # 30 minutes TTL for sessions
+      ttl-policy: SLIDING       # 🆕 Perfect for session management
     products:
-      ttl: PT15M                # 15 minute TTL for products
+      ttl: PT6H                 # 6 hours TTL for product cache
+      ttl-policy: ABSOLUTE      # Use absolute TTL for product data
 ```
 
-For database schema details and implementation specifics, please refer to the [pgcache-core module README](pgcache-core/README.md).
+#### 🆕 Programmatic Configuration
+
+```java
+@Configuration
+public class CacheConfig {
+    
+    @Bean
+    public CacheManager cacheManager(DataSource dataSource) {
+        PgCacheManager cacheManager = new PgCacheManager(dataSource);
+        
+        // Configure cache with sliding TTL
+        cacheManager.setCacheConfiguration("users", 
+            PgCacheManager.PgCacheConfiguration.builder()
+                .defaultTtl(Duration.ofHours(2))
+                .ttlPolicy(TTLPolicy.SLIDING)        // 🆕 Sliding TTL
+                .allowNullValues(false)
+                .backgroundCleanupEnabled(true)
+                .build());
+        
+        // Configure cache with absolute TTL
+        cacheManager.setCacheConfiguration("products",
+            PgCacheManager.PgCacheConfiguration.builder()
+                .defaultTtl(Duration.ofHours(6))
+                .ttlPolicy(TTLPolicy.ABSOLUTE)       // Traditional TTL
+                .allowNullValues(true)
+                .build());
+        
+        return cacheManager;
+    }
+}
+```
 
 ## Why use PostgreSQL as a cache?
 
-### Advantages over dedicated cache engines (Redis, Memcached, etc.)
+### 🔥 **Competitive Advantages**
 
-- **Simplified architecture**: Eliminate the need for separate cache infrastructure, reducing operational complexity
-- **Built-in persistence**: Cache data is automatically persistent with configurable durability levels
-- **Transactional integrity**: Cache operations can participate in database transactions
-- **Rich query capabilities**: Use SQL and JSONB operations for advanced cache querying beyond key-value lookups
-- **Familiar tooling**: Leverage existing PostgreSQL monitoring, backup, and management tools
-- **Security integration**: Utilize PostgreSQL's robust security features and existing authentication mechanisms
-- **No additional licensing costs**: Use your existing PostgreSQL licenses
+**PgCache is the first PostgreSQL cache with sliding TTL in the Java ecosystem!**
 
-### Technical advantages
+#### vs Redis
+- **✅ Persistent by default**: No data loss on restarts
+- **✅ ACID transactions**: Cache operations can be transactional
+- **✅ Unified stack**: One database for data + cache
+- **✅ Sliding TTL**: Matches Redis capabilities with better persistence
+- **✅ Rich querying**: SQL + JSONB beyond key-value
+- **✅ Familiar tooling**: Use existing PostgreSQL tools
+
+#### vs Memcached
+- **✅ Persistent storage**: Data survives restarts
+- **✅ Complex data types**: JSONB support for structured data
+- **✅ Sliding TTL**: Advanced expiration strategies
+- **✅ Transactions**: ACID compliance when needed
+- **✅ Security**: Built-in authentication and authorization
+
+#### vs Hazelcast/Caffeine
+- **✅ Distributed by nature**: PostgreSQL replication
+- **✅ Persistent**: No warmup needed after restarts
+- **✅ SQL queryable**: Advanced cache querying
+- **✅ Sliding TTL**: First PostgreSQL cache with this feature
+
+### 🎯 **Technical Advantages**
 
 - **JSONB performance**: PostgreSQL's JSONB type offers excellent performance for structured data
 - **GIN indexing**: Efficient querying of JSON data through optimized indexing
@@ -194,8 +299,9 @@ For database schema details and implementation specifics, please refer to the [p
 - **Advanced TTL management**: Leverage PostgreSQL's built-in timestamp and interval types
 - **Sliding TTL support**: First PostgreSQL cache with sliding TTL, matching Redis capabilities
 - **Horizontal scaling**: Use PostgreSQL's replication features for scaling
+- **Simplified architecture**: Eliminate the need for separate cache infrastructure
 
-## Sliding TTL Benefits
+## 🚀 Sliding TTL Benefits
 
 The sliding TTL feature gives PgCache a significant competitive advantage:
 
@@ -221,11 +327,13 @@ The sliding TTL feature gives PgCache a significant competitive advantage:
 
 ## When to choose PgCache
 
-- You already have PostgreSQL in your stack
-- You want to reduce infrastructure complexity
-- Your cache needs ACID guarantees
-- You need rich querying capabilities beyond simple key-value lookups
-- You want to avoid managing additional cache systems
+- ✅ You already have PostgreSQL in your stack
+- ✅ You want to reduce infrastructure complexity
+- ✅ Your cache needs ACID guarantees
+- ✅ You need rich querying capabilities beyond simple key-value lookups
+- ✅ You want to avoid managing additional cache systems
+- ✅ You need sliding TTL functionality with PostgreSQL
+- ✅ You want persistent cache that survives restarts
 
 ## Best Practices
 
@@ -246,6 +354,18 @@ The sliding TTL feature gives PgCache a significant competitive advantage:
 - **Annotation usage**: Use `@Cacheable` with sliding TTL for frequently accessed methods
 - **Key generation**: Use meaningful cache keys for better debugging and monitoring
 
+## Performance Considerations
+
+- **UNLOGGED tables**: Used by default for maximum performance
+- **GIN indexes**: Efficient JSONB querying and storage
+- **Background cleanup**: Configurable cleanup intervals
+- **Connection pooling**: Proper connection management is crucial
+- **Sliding TTL overhead**: Minimal - only updates timestamp on access
+
+## Database Schema
+
+For database schema details and implementation specifics, please refer to the [pgcache-core module README](pgcache-core/README.md).
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
@@ -256,4 +376,6 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## Acknowledgements
 
-- This project was inspired by the need for a simpler cache solution that leverages existing database infrastructure.
+- This project was inspired by the need for a simpler cache solution that leverages existing database infrastructure
+- Special thanks to the PostgreSQL community for providing excellent JSONB and indexing capabilities
+- Inspired by Redis sliding expiration features, now available for PostgreSQL caching
