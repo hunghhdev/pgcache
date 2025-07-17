@@ -739,4 +739,41 @@ public class PgCacheStore implements PgCacheClient {
             throw new PgCacheException("Failed to get TTL policy from cache", e);
         }
     }
+
+    @Override
+    public boolean refreshTTL(String key, Duration newTtl) {
+        if (key == null || key.isEmpty()) {
+            throw new PgCacheException("Cache key cannot be null or empty");
+        }
+        if (newTtl == null || newTtl.isNegative()) {
+            throw new PgCacheException("TTL cannot be null or negative");
+        }
+
+        // First try to update existing entry (may include permanent entries)
+        String sql = "UPDATE " + TABLE_NAME + 
+                     " SET ttl_seconds = ?, ttl_policy = ?, updated_at = CURRENT_TIMESTAMP, last_accessed = CURRENT_TIMESTAMP " +
+                     " WHERE key = ?";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setLong(1, newTtl.getSeconds());
+            stmt.setString(2, TTLPolicy.ABSOLUTE.name()); // Default to ABSOLUTE when manually setting TTL
+            stmt.setString(3, key);
+
+            int updatedRows = stmt.executeUpdate();
+            boolean success = updatedRows > 0;
+            
+            if (success) {
+                logger.debug("Successfully refreshed TTL for key '{}' to {} seconds", key, newTtl.getSeconds());
+            } else {
+                logger.debug("Failed to refresh TTL for key '{}' - key not found", key);
+            }
+            
+            return success;
+
+        } catch (SQLException e) {
+            throw new PgCacheException("Failed to refresh TTL for key: " + key, e);
+        }
+    }
 }

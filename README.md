@@ -1,7 +1,7 @@
 # PgCache
 
 [![Java](https://img.shields.io/badge/Java-11%2B-blue.svg)](https://www.oracle.com/java/)
-[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.1.0-green.svg)](https://search.maven.org/artifact/io.github.hunghhdev/pgcache-core)
+[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.2.0-green.svg)](https://search.maven.org/artifact/io.github.hunghhdev/pgcache-core)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 A production-ready Java library for using PostgreSQL as a cache backend, providing both standalone API and Spring Framework integration with **sliding TTL support**.
@@ -57,7 +57,7 @@ This project is organized as a multi-module Maven project:
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-core</artifactId>
-  <version>1.1.0</version>
+  <version>1.2.0-SNAPSHOT</version>
 </dependency>
 ```
 
@@ -126,7 +126,7 @@ cacheClient.put("session:xyz", sessionData, Duration.ofHours(1), TTLPolicy.SLIDI
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-spring</artifactId>
-  <version>1.1.0</version>
+  <version>1.2.0-SNAPSHOT</version>
 </dependency>
 ```
 
@@ -203,6 +203,27 @@ public class UserService {
         // Check TTL policy
         Optional<TTLPolicy> policy = cache.getTTLPolicy(id);
         policy.ifPresent(p -> log.info("User {} uses {} TTL policy", id, p));
+    }
+    
+    // 🆕 TTL Refresh Management
+    public void extendUserSession(Long userId) {
+        PgCache cache = (PgCache) cacheManager.getCache("users");
+        
+        // Extend TTL for active user (useful for session management)
+        boolean refreshed = cache.refreshTTL(userId, Duration.ofHours(4));
+        if (refreshed) {
+            log.info("Extended TTL for user {}", userId);
+        }
+    }
+    
+    public void convertToPermanentUser(Long userId) {
+        PgCache cache = (PgCache) cacheManager.getCache("users");
+        
+        // Add TTL to a permanent entry (convert temporary to permanent)
+        boolean success = cache.refreshTTL(userId, Duration.ofDays(30));
+        if (success) {
+            log.info("Added 30-day TTL to permanent user {}", userId);
+        }
     }
 }
 ```

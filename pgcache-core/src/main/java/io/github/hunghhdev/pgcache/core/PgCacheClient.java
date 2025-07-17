@@ -60,6 +60,15 @@ public interface PgCacheClient {
      */
     Optional<TTLPolicy> getTTLPolicy(String key);
     
+    /**
+     * Refreshes the TTL for an existing cache entry.
+     * @param key the cache key
+     * @param newTtl the new TTL duration
+     * @return true if the TTL was refreshed successfully, false if key doesn't exist
+     * @since 1.1.0
+     */
+    boolean refreshTTL(String key, Duration newTtl);
+    
     void evict(String key);
     void clear();
     int size();

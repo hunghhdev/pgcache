@@ -59,9 +59,8 @@ public class PgCache implements Cache {
         
         try {
             String keyStr = toKeyString(key);
-            // For sliding TTL, we need to refresh the TTL on access
-            boolean refreshTtl = ttlPolicy == TTLPolicy.SLIDING;
-            Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, refreshTtl);
+            // Always refresh TTL - let the core decide based on the entry's TTL policy
+            Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, true);
             
             if (!optionalValue.isPresent()) {
                 return null;
@@ -83,9 +82,8 @@ public class PgCache implements Cache {
         
         try {
             String keyStr = toKeyString(key);
-            // For sliding TTL, we need to refresh the TTL on access
-            boolean refreshTtl = ttlPolicy == TTLPolicy.SLIDING;
-            Optional<T> optionalValue = cacheStore.get(keyStr, type, refreshTtl);
+            // Always refresh TTL - let the core decide based on the entry's TTL policy
+            Optional<T> optionalValue = cacheStore.get(keyStr, type, true);
             return optionalValue.orElse(null);
         } catch (Exception e) {
             logger.warn("Failed to get value from cache '{}' for key '{}' with type {}: {}", 
@@ -105,9 +103,8 @@ public class PgCache implements Cache {
             String keyStr = toKeyString(key);
             
             // Try to get from cache first
-            // For sliding TTL, we need to refresh the TTL on access
-            boolean refreshTtl = ttlPolicy == TTLPolicy.SLIDING;
-            Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, refreshTtl);
+            // Always refresh TTL - let the core decide based on the entry's TTL policy
+            Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, true);
             if (optionalValue.isPresent()) {
                 return (T) optionalValue.get();
             }
@@ -380,6 +377,27 @@ public class PgCache implements Cache {
      */
     public TTLPolicy getDefaultTTLPolicy() {
         return ttlPolicy;
+    }
+    
+    /**
+     * Refresh TTL for an existing cache entry.
+     *
+     * @param key the cache key
+     * @param newTtl the new TTL duration
+     * @return true if TTL was refreshed successfully, false if key not found
+     */
+    public boolean refreshTTL(Object key, Duration newTtl) {
+        if (key == null) {
+            return false;
+        }
+        
+        try {
+            String keyStr = toKeyString(key);
+            return cacheStore.refreshTTL(keyStr, newTtl);
+        } catch (Exception e) {
+            logger.warn("Failed to refresh TTL for cache '{}' key '{}': {}", name, key, e.getMessage());
+            return false;
+        }
     }
     
     /**
