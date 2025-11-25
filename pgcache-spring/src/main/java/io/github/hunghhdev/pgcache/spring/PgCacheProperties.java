@@ -147,6 +147,12 @@ public class PgCacheProperties {
         private String tableName;
         
         /**
+         * TTL policy for this cache (ABSOLUTE or SLIDING). If null, uses ABSOLUTE.
+         * @since 1.2.0
+         */
+        private io.github.hunghhdev.pgcache.core.TTLPolicy ttlPolicy;
+        
+        /**
          * Background cleanup configuration for this cache.
          */
         private BackgroundCleanup backgroundCleanup;
@@ -175,6 +181,14 @@ public class PgCacheProperties {
             this.tableName = tableName;
         }
         
+        public io.github.hunghhdev.pgcache.core.TTLPolicy getTtlPolicy() {
+            return ttlPolicy;
+        }
+        
+        public void setTtlPolicy(io.github.hunghhdev.pgcache.core.TTLPolicy ttlPolicy) {
+            this.ttlPolicy = ttlPolicy;
+        }
+        
         public BackgroundCleanup getBackgroundCleanup() {
             return backgroundCleanup;
         }
@@ -196,13 +210,17 @@ public class PgCacheProperties {
             BackgroundCleanup effectiveCleanup = this.backgroundCleanup != null ? 
                 this.backgroundCleanup : globalProperties.getBackgroundCleanup();
             
+            // Use configured TTL policy or default to ABSOLUTE
+            io.github.hunghhdev.pgcache.core.TTLPolicy effectivePolicy = 
+                this.ttlPolicy != null ? this.ttlPolicy : io.github.hunghhdev.pgcache.core.TTLPolicy.ABSOLUTE;
+            
             return new PgCacheManager.PgCacheConfiguration(
                 effectiveTtl,
                 effectiveAllowNullValues,
                 effectiveTableName,
                 effectiveCleanup.isEnabled(),
                 effectiveCleanup.getInterval(),
-                io.github.hunghhdev.pgcache.core.TTLPolicy.ABSOLUTE
+                effectivePolicy
             );
         }
     }

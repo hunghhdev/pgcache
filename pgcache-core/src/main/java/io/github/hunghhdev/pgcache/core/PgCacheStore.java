@@ -32,7 +32,7 @@ import org.slf4j.LoggerFactory;
  *   <li>All cache operations are safe for concurrent access</li>
  * </ul>
  */
-public class PgCacheStore implements PgCacheClient {
+public class PgCacheStore implements PgCacheClient, AutoCloseable {
     private static final Logger logger = LoggerFactory.getLogger(PgCacheStore.class);
     private static final String TABLE_NAME = "pgcache_store";
     private static final String CREATE_TABLE_SQL =
@@ -44,10 +44,6 @@ public class PgCacheStore implements PgCacheClient {
         "  ttl_policy VARCHAR(10) DEFAULT 'ABSOLUTE', " +
         "  last_accessed TIMESTAMP DEFAULT now()" +
         ")";
-
-    private static final String CREATE_INDEX_SQL =
-        "CREATE INDEX IF NOT EXISTS " + TABLE_NAME + "_key_idx " +
-        "ON " + TABLE_NAME + " (key)";
 
     private static final String CREATE_GIN_INDEX_SQL =
         "CREATE INDEX IF NOT EXISTS " + TABLE_NAME + "_value_gin_idx " +
@@ -138,8 +134,6 @@ public class PgCacheStore implements PgCacheClient {
             // Create table with dynamic UNLOGGED option
             stmt.execute(CREATE_TABLE_SQL);
 
-            // Create index on updated_at and ttl_seconds for expiry checking
-            stmt.execute(CREATE_INDEX_SQL);
             // Create GIN index on value column for JSONB data
             stmt.execute(CREATE_GIN_INDEX_SQL);
             // Create TTL index for efficient expiration queries
@@ -294,9 +288,22 @@ public class PgCacheStore implements PgCacheClient {
         }
     }
 
+    // Cache for size() method to avoid expensive full table scans
+    private volatile int cachedSize = -1;
+    private volatile Instant lastSizeUpdate = Instant.MIN;
+    private static final Duration SIZE_CACHE_DURATION = Duration.ofSeconds(5);
+
     @Override
     public int size() {
+        // Use cached value if still valid
+        if (cachedSize >= 0 && 
+            Duration.between(lastSizeUpdate, Instant.now()).compareTo(SIZE_CACHE_DURATION) < 0) {
+            logger.trace("Returning cached size: {}", cachedSize);
+            return cachedSize;
+        }
+        
         // Count all non-expired entries (entries with NULL TTL are considered permanent)
+        // Note: This query can be slow on large datasets
         String sql = "SELECT COUNT(*) FROM " + TABLE_NAME +
                      " WHERE ttl_seconds IS NULL OR (updated_at + (ttl_seconds * interval '1 second')) > now()";
 
@@ -305,11 +312,15 @@ public class PgCacheStore implements PgCacheClient {
              ResultSet rs = stmt.executeQuery(sql)) {
 
             if (rs.next()) {
-                return rs.getInt(1);
+                cachedSize = rs.getInt(1);
+                lastSizeUpdate = Instant.now();
+                logger.debug("Cache size updated: {}", cachedSize);
+                return cachedSize;
             }
 
             return 0;
         } catch (SQLException e) {
+            logger.error("Failed to get cache size", e);
             throw new PgCacheException("Failed to get cache size", e);
         }
     }
@@ -319,12 +330,21 @@ public class PgCacheStore implements PgCacheClient {
      * This method performs a batch cleanup of all entries that have exceeded their TTL.
      * Entries with NULL TTL (permanent entries) are not affected.
      * 
+     * For ABSOLUTE TTL: Expiration is based on updated_at + ttl_seconds
+     * For SLIDING TTL: Expiration is based on last_accessed + ttl_seconds
+     * 
      * @return the number of expired entries that were removed
      */
     public int cleanupExpired() {
-        // Only cleanup entries with TTL that have expired (ignore NULL TTL entries)
+        // Cleanup entries with TTL that have expired, handling both policies correctly
         String sql = "DELETE FROM " + TABLE_NAME +
-                     " WHERE ttl_seconds IS NOT NULL AND (updated_at + (ttl_seconds * interval '1 second')) <= now()";
+                     " WHERE ttl_seconds IS NOT NULL AND (" +
+                     // ABSOLUTE TTL: expire based on updated_at
+                     "  (ttl_policy = 'ABSOLUTE' AND (updated_at + (ttl_seconds * interval '1 second')) <= now()) " +
+                     "  OR " +
+                     // SLIDING TTL: expire based on last_accessed
+                     "  (ttl_policy = 'SLIDING' AND (last_accessed + (ttl_seconds * interval '1 second')) <= now())" +
+                     ")";
 
         try (Connection conn = getValidatedConnection();
              Statement stmt = conn.createStatement()) {
@@ -468,7 +488,26 @@ public class PgCacheStore implements PgCacheClient {
         
         if (enableBackgroundCleanup) {
             startBackgroundCleanup();
+            registerShutdownHook();
         }
+    }
+
+    /**
+     * Registers a shutdown hook to ensure proper cleanup on JVM shutdown.
+     */
+    private void registerShutdownHook() {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            logger.info("Shutting down PgCache cleanup executor via shutdown hook...");
+            shutdown();
+        }, "pgcache-shutdown-hook"));
+    }
+
+    /**
+     * Implementation of AutoCloseable for try-with-resources support.
+     */
+    @Override
+    public void close() {
+        shutdown();
     }
 
     /**
