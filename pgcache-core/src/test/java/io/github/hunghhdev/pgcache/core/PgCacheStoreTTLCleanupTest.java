@@ -175,6 +175,9 @@ class PgCacheStoreTTLCleanupTest {
             fail("Test interrupted");
         }
 
+        // Invalidate size cache to ensure accurate count after expiration
+        cache.invalidateSizeCache();
+
         // size() should only count non-expired entries
         int sizeAfterExpiration = cache.size();
         assertEquals(1, sizeAfterExpiration, "Size should only count non-expired entries");

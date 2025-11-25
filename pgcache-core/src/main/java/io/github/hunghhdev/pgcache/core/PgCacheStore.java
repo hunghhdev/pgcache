@@ -207,6 +207,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             stmt.setString(2, jsonValue);
 
             stmt.executeUpdate();
+            invalidateSizeCache(); // Invalidate size cache on modification
         } catch (Exception e) {
             throw new PgCacheException("Failed to put value in cache", e);
         }
@@ -292,7 +293,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     }
 
     // Helper method to invalidate size cache
-    private void invalidateSizeCache() {
+    void invalidateSizeCache() {
         cachedSize = -1;
         lastSizeUpdate = Instant.MIN;
     }
@@ -362,6 +363,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             
             if (deletedCount > 0) {
                 logger.info("Cleaned up {} expired cache entries", deletedCount);
+                invalidateSizeCache(); // Invalidate size cache if entries were removed
             } else {
                 logger.debug("No expired cache entries found during cleanup");
             }

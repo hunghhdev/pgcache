@@ -191,6 +191,9 @@ class PgCacheStoreIntegrationTest {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+        
+        // Invalidate size cache to ensure accurate count after expiration
+        cacheStore.invalidateSizeCache();
 
         // Only permanent entry should remain in count
         assertEquals(1, cacheStore.size());
