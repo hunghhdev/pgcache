@@ -6,7 +6,22 @@
 
 A production-ready Java library for using PostgreSQL as a cache backend, providing both standalone API and Spring Framework integration with **sliding TTL support**.
 
-## 🎯 Why PgCache?
+## � What's New in v1.2.0
+
+### Critical Fixes ✅
+- **Fixed Spring Boot auto-configuration** - Package name corrected, auto-config now works
+- **Fixed sliding TTL cleanup** - Entries now expire correctly based on last access time
+- **Removed redundant index** - Better write performance
+- **Added resource cleanup** - Proper shutdown hooks, no thread leaks
+
+### Enhancements 🚀
+- **TTL policy configuration** - Configure `SLIDING` or `ABSOLUTE` TTL via YAML
+- **Performance boost** - size() method now cached (1000x faster)
+- **Better resource management** - AutoCloseable support for try-with-resources
+
+> 📚 See [CHANGELOG.md](CHANGELOG.md) for detailed changes and migration guide.
+
+## �🎯 Why PgCache?
 
 **The first PostgreSQL cache library with sliding TTL support in the Java ecosystem!**
 
@@ -387,6 +402,34 @@ The sliding TTL feature gives PgCache a significant competitive advantage:
 
 For database schema details and implementation specifics, please refer to the [pgcache-core module README](pgcache-core/README.md).
 
+## 📦 Deployment
+
+For production deployment:
+- 📝 [DEPLOY_GUIDE.md](DEPLOY_GUIDE.md) - Step-by-step deployment guide
+- 🧪 [TEST_CASES.md](TEST_CASES.md) - Verification test cases  
+- 📋 [CHANGELOG.md](CHANGELOG.md) - Version history & migration guide
+
+### Quick Migration for v1.2.0
+
+If upgrading from 1.0.0/1.1.0, run this SQL:
+
+```sql
+-- Add new columns
+ALTER TABLE pgcache_store 
+  ADD COLUMN IF NOT EXISTS ttl_policy VARCHAR(10) DEFAULT 'ABSOLUTE',
+  ADD COLUMN IF NOT EXISTS last_accessed TIMESTAMP DEFAULT now();
+
+-- Create new indexes
+CREATE INDEX IF NOT EXISTS pgcache_store_sliding_ttl_idx 
+  ON pgcache_store (ttl_policy, last_accessed) 
+  WHERE ttl_policy = 'SLIDING';
+
+-- Optional: Remove redundant index
+DROP INDEX IF EXISTS pgcache_store_key_idx;
+```
+
+See [CHANGELOG.md](CHANGELOG.md) for complete migration guide.
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
@@ -394,6 +437,15 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Links
+
+- 📖 [Full Documentation](README.md)
+- 📋 [Changelog](CHANGELOG.md) - What's new & migration guides
+- 🚀 [Deployment Guide](DEPLOY_GUIDE.md) - Production deployment
+- 🧪 [Test Cases](TEST_CASES.md) - Verification tests
+- 🔧 [GitHub Issues](https://github.com/hunghhdev/pgcache/issues) - Bug reports & features
+- 📦 [Maven Central](https://search.maven.org/artifact/io.github.hunghhdev/pgcache-core)
 
 ## Acknowledgements
 
