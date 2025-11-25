@@ -72,7 +72,7 @@ This project is organized as a multi-module Maven project:
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-core</artifactId>
-  <version>1.2.0-SNAPSHOT</version>
+  <version>1.2.0</version>
 </dependency>
 ```
 
