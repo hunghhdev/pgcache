@@ -252,6 +252,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             stmt.setString(4, policy.name());
 
             stmt.executeUpdate();
+            invalidateSizeCache(); // Invalidate size cache on modification
         } catch (Exception e) {
             throw new PgCacheException("Failed to put value in cache", e);
         }
@@ -270,6 +271,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
             stmt.setString(1, key);
             stmt.executeUpdate();
+            invalidateSizeCache(); // Invalidate size cache on modification
         } catch (SQLException e) {
             throw new PgCacheException("Failed to evict key from cache", e);
         }
@@ -283,9 +285,16 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
              Statement stmt = conn.createStatement()) {
 
             stmt.executeUpdate(sql);
+            invalidateSizeCache(); // Invalidate size cache on modification
         } catch (SQLException e) {
             throw new PgCacheException("Failed to clear cache", e);
         }
+    }
+
+    // Helper method to invalidate size cache
+    private void invalidateSizeCache() {
+        cachedSize = -1;
+        lastSizeUpdate = Instant.MIN;
     }
 
     // Cache for size() method to avoid expensive full table scans
