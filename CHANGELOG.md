@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2025-12-17
+
+### Added
+- 🆕 **Null Value Caching Support** - Cache null values with `NullValueMarker` pattern
+  - `allowNullValues` option in `PgCacheStore.Builder`
+  - `NullValueMarker` singleton class for representing cached null values
+  - Spring Cache properly handles cached null values (no infinite loops)
+
+### Fixed
+- 🔴 **CRITICAL**: Fixed null value caching causing infinite loops in Spring Cache
+  - Previously cached null and cache miss both returned `Optional.empty()`
+  - Now cached null returns `Optional.of(NullValueMarker)` for proper distinction
+  - Spring Cache wrapper correctly recognizes and handles null markers
+
+---
+
 ## [1.2.0] - 2025-12-02
 
 ### Added
