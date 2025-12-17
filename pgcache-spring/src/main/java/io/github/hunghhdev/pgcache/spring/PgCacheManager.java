@@ -155,7 +155,8 @@ public class PgCacheManager implements CacheManager {
             // Create the underlying cache store
             PgCacheStore.Builder builder = PgCacheStore.builder()
                     .dataSource(dataSource)
-                    .autoCreateTable(true);
+                    .autoCreateTable(true)
+                    .allowNullValues(config.isAllowNullValues());
             
             // Configure background cleanup if enabled
             if (config.isBackgroundCleanupEnabled() && config.getBackgroundCleanupInterval() != null) {

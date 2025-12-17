@@ -1,5 +1,6 @@
 package io.github.hunghhdev.pgcache.spring;
 
+import io.github.hunghhdev.pgcache.core.NullValueMarker;
 import io.github.hunghhdev.pgcache.core.PgCacheStore;
 import io.github.hunghhdev.pgcache.core.TTLPolicy;
 import org.slf4j.Logger;
@@ -56,17 +57,23 @@ public class PgCache implements Cache {
         if (key == null) {
             return null;
         }
-        
+
         try {
             String keyStr = toKeyString(key);
             // Always refresh TTL - let the core decide based on the entry's TTL policy
             Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, true);
-            
+
             if (!optionalValue.isPresent()) {
                 return null;
             }
-            
-            return new SimpleValueWrapper(optionalValue.get());
+
+            Object value = optionalValue.get();
+            // Check for null marker - indicates cached null value
+            if (value instanceof NullValueMarker) {
+                return new SimpleValueWrapper(null);
+            }
+
+            return new SimpleValueWrapper(value);
         } catch (Exception e) {
             logger.warn("Failed to get value from cache '{}' for key '{}': {}", name, key, e.getMessage());
             return null;
@@ -79,14 +86,25 @@ public class PgCache implements Cache {
         if (key == null) {
             return null;
         }
-        
+
         try {
             String keyStr = toKeyString(key);
             // Always refresh TTL - let the core decide based on the entry's TTL policy
-            Optional<T> optionalValue = cacheStore.get(keyStr, type, true);
-            return optionalValue.orElse(null);
+            Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, true);
+            if (!optionalValue.isPresent()) {
+                return null;
+            }
+
+            Object value = optionalValue.get();
+            // Check for null marker - indicates cached null value
+            if (value instanceof NullValueMarker) {
+                return null;
+            }
+
+            // Re-fetch with proper type if not null marker
+            return cacheStore.get(keyStr, type, false).orElse(null);
         } catch (Exception e) {
-            logger.warn("Failed to get value from cache '{}' for key '{}' with type {}: {}", 
+            logger.warn("Failed to get value from cache '{}' for key '{}' with type {}: {}",
                        name, key, type.getSimpleName(), e.getMessage());
             return null;
         }
@@ -98,21 +116,26 @@ public class PgCache implements Cache {
         if (key == null) {
             throw new IllegalArgumentException("Cache key cannot be null");
         }
-        
+
         try {
             String keyStr = toKeyString(key);
-            
+
             // Try to get from cache first
             // Always refresh TTL - let the core decide based on the entry's TTL policy
             Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, true);
             if (optionalValue.isPresent()) {
-                return (T) optionalValue.get();
+                Object value = optionalValue.get();
+                // Check for null marker - indicates cached null value
+                if (value instanceof NullValueMarker) {
+                    return null;  // Return null for cached null value
+                }
+                return (T) value;
             }
-            
+
             // Load value using the valueLoader
             try {
                 T value = valueLoader.call();
-                
+
                 // Store in cache
                 if (value != null || allowNullValues) {
                     if (defaultTtl != null) {
@@ -121,12 +144,12 @@ public class PgCache implements Cache {
                         cacheStore.put(keyStr, value);
                     }
                 }
-                
+
                 return value;
             } catch (Exception e) {
                 throw new ValueRetrievalException(key, valueLoader, e);
             }
-            
+
         } catch (Exception e) {
             logger.error("Failed to get/load value from cache '{}' for key '{}': {}", name, key, e.getMessage());
             throw new RuntimeException("Cache operation failed", e);
@@ -282,13 +305,24 @@ public class PgCache implements Cache {
         if (key == null) {
             return null;
         }
-        
+
         try {
             String keyStr = toKeyString(key);
-            Optional<T> optionalValue = cacheStore.get(keyStr, type, refreshTTL);
-            return optionalValue.orElse(null);
+            Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, refreshTTL);
+            if (!optionalValue.isPresent()) {
+                return null;
+            }
+
+            Object value = optionalValue.get();
+            // Check for null marker - indicates cached null value
+            if (value instanceof NullValueMarker) {
+                return null;
+            }
+
+            // Re-fetch with proper type if not null marker
+            return cacheStore.get(keyStr, type, false).orElse(null);
         } catch (Exception e) {
-            logger.warn("Failed to get value from cache '{}' for key '{}' with type {} and refreshTTL={}: {}", 
+            logger.warn("Failed to get value from cache '{}' for key '{}' with type {} and refreshTTL={}: {}",
                        name, key, type.getSimpleName(), refreshTTL, e.getMessage());
             return null;
         }

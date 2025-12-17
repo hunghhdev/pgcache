@@ -64,6 +64,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     private final boolean autoCreateTable;
     private final boolean enableBackgroundCleanup;
     private final long cleanupIntervalMinutes;
+    private final boolean allowNullValues;
     private volatile ScheduledExecutorService cleanupExecutor;
     
     // Thread-safe initialization flag using double-checked locking pattern
@@ -85,6 +86,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         this.autoCreateTable = autoCreateTable;
         this.enableBackgroundCleanup = false;
         this.cleanupIntervalMinutes = 5;
+        this.allowNullValues = false; // Default to false for backward compatibility
 
         if (autoCreateTable) {
             initializeTable();
@@ -184,8 +186,14 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         if (key == null || key.isEmpty()) {
             throw new PgCacheException("Cache key cannot be null or empty");
         }
+        
+        // Handle null values based on allowNullValues setting
+        Object valueToStore = value;
         if (value == null) {
-            throw new PgCacheException("Cache value cannot be null");
+            if (!allowNullValues) {
+                throw new PgCacheException("Cache value cannot be null (allowNullValues=false)");
+            }
+            valueToStore = NullValueMarker.getInstance();
         }
 
         // SQL for upsert without TTL (permanent entry)
@@ -201,7 +209,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
             // Serialize the value to JSON
-            String jsonValue = objectMapper.writeValueAsString(value);
+            String jsonValue = objectMapper.writeValueAsString(valueToStore);
 
             stmt.setString(1, key);
             stmt.setString(2, jsonValue);
@@ -218,9 +226,16 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         if (key == null || key.isEmpty()) {
             throw new PgCacheException("Cache key cannot be null or empty");
         }
+        
+        // Handle null values based on allowNullValues setting
+        Object valueToStore = value;
         if (value == null) {
-            throw new PgCacheException("Cache value cannot be null");
+            if (!allowNullValues) {
+                throw new PgCacheException("Cache value cannot be null (allowNullValues=false)");
+            }
+            valueToStore = NullValueMarker.getInstance();
         }
+        
         if (ttl == null || ttl.isNegative() || ttl.isZero()) {
             throw new PgCacheException("TTL must be positive");
         }
@@ -245,7 +260,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
             // Serialize the value to JSON
-            String jsonValue = objectMapper.writeValueAsString(value);
+            String jsonValue = objectMapper.writeValueAsString(valueToStore);
 
             stmt.setString(1, key);
             stmt.setString(2, jsonValue);
@@ -404,6 +419,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         private boolean autoCreateTable = true;
         private boolean enableBackgroundCleanup = false;
         private long cleanupIntervalMinutes = 5;
+        private boolean allowNullValues = false;
 
         private Builder() {
             this.objectMapper = new ObjectMapper();
@@ -463,6 +479,18 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             this.cleanupIntervalMinutes = cleanupIntervalMinutes;
             return this;
         }
+        
+        /**
+         * Sets whether to allow null values in the cache.
+         *
+         * @param allowNullValues true to allow null values, false otherwise
+         * @return this builder
+         * @since 1.3.0
+         */
+        public Builder allowNullValues(boolean allowNullValues) {
+            this.allowNullValues = allowNullValues;
+            return this;
+        }
 
         /**
          * Builds a new PgCacheStore instance.
@@ -478,7 +506,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 objectMapper = new ObjectMapper();
             }
             return new PgCacheStore(dataSource, objectMapper, autoCreateTable, 
-                                  enableBackgroundCleanup, cleanupIntervalMinutes);
+                                  enableBackgroundCleanup, cleanupIntervalMinutes, allowNullValues);
         }
     }
 
@@ -486,12 +514,13 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
      * Private constructor used by the Builder.
      */
     private PgCacheStore(DataSource dataSource, ObjectMapper objectMapper, boolean autoCreateTable, 
-                         boolean enableBackgroundCleanup, long cleanupIntervalMinutes) {
+                         boolean enableBackgroundCleanup, long cleanupIntervalMinutes, boolean allowNullValues) {
         this.dataSource = dataSource;
         this.objectMapper = objectMapper;
         this.autoCreateTable = autoCreateTable;
         this.enableBackgroundCleanup = enableBackgroundCleanup;
         this.cleanupIntervalMinutes = cleanupIntervalMinutes;
+        this.allowNullValues = allowNullValues;
 
         if (autoCreateTable) {
             initializeTable();
@@ -666,6 +695,23 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 }
 
                 // Deserialize the value
+                Object rawResult = objectMapper.readValue(jsonValue, Object.class);
+
+                // Check if this is a null marker
+                if (allowNullValues && rawResult instanceof java.util.Map) {
+                    @SuppressWarnings("unchecked")
+                    java.util.Map<String, Object> map = (java.util.Map<String, Object>) rawResult;
+                    // NullValueMarker has a "marker" property with value "NULL_MARKER"
+                    if (map.size() == 1 && "NULL_MARKER".equals(map.get("marker"))) {
+                        // Return the marker so caller can distinguish from cache miss
+                        // Caller (e.g., Spring Cache wrapper) should check for this and handle accordingly
+                        @SuppressWarnings("unchecked")
+                        T marker = (T) NullValueMarker.getInstance();
+                        return Optional.of(marker);
+                    }
+                }
+
+                // Normal deserialization with the requested type
                 T result = objectMapper.readValue(jsonValue, clazz);
                 return Optional.of(result);
 
