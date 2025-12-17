@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2025-12-17
+
+### Fixed
+- **size()** query now correctly handles sliding TTL entries (was only checking `updated_at`, now checks `last_accessed` for SLIDING policy)
+- **putIfAbsent** race condition fixed with atomic PostgreSQL `ON CONFLICT DO NOTHING`
+
+### Added
+- `putIfAbsent(key, value, ttl, policy)` method in `PgCacheClient` interface for atomic conditional insert
+- `putIfAbsent(key, value)` method for permanent entries
+
+### Removed
+- Outdated `pgcache-core/README.md` (main README is sufficient)
+
+---
+
 ## [1.2.1] - 2025-12-17
 
 ### Added

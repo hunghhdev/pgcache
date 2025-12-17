@@ -68,7 +68,28 @@ public interface PgCacheClient {
      * @since 1.1.0
      */
     boolean refreshTTL(String key, Duration newTtl);
-    
+
+    /**
+     * Atomically puts a value in the cache only if the key is not already present.
+     * This operation is atomic at the database level using PostgreSQL's ON CONFLICT.
+     * @param key the cache key
+     * @param value the value to cache
+     * @param ttl time to live duration
+     * @param policy the TTL policy (ABSOLUTE or SLIDING)
+     * @return Optional containing the existing value if key was present, empty if value was inserted
+     * @since 1.2.2
+     */
+    <T> Optional<Object> putIfAbsent(String key, T value, Duration ttl, TTLPolicy policy);
+
+    /**
+     * Atomically puts a permanent value in the cache only if the key is not already present.
+     * @param key the cache key
+     * @param value the value to cache
+     * @return Optional containing the existing value if key was present, empty if value was inserted
+     * @since 1.2.2
+     */
+    <T> Optional<Object> putIfAbsent(String key, T value);
+
     void evict(String key);
     void clear();
     int size();

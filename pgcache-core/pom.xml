@@ -6,11 +6,11 @@
     <parent>
         <groupId>io.github.hunghhdev</groupId>
         <artifactId>pgcache</artifactId>
-        <version>1.2.1</version>
+        <version>1.2.2</version>
     </parent>
 
     <artifactId>pgcache-core</artifactId>
-    <version>1.2.1</version>
+    <version>1.2.2</version>
     <packaging>jar</packaging>
     <name>PgCache Core</name>
     <description>Core Java cache library (no Spring dependency)</description>

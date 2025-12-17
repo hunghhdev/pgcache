@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CountDownLatch;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -190,6 +191,104 @@ class PgCacheStoreThreadSafetyTest {
         
         executor.shutdown();
         assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void testPutIfAbsentBasicOperation() {
+        PgCacheStore cache = PgCacheStore.builder()
+                .dataSource(dataSource)
+                .autoCreateTable(true)
+                .build();
+
+        cache.clear();
+
+        // First putIfAbsent should succeed (return empty)
+        Optional<Object> result1 = cache.putIfAbsent("new-key", "value1", Duration.ofMinutes(10), TTLPolicy.ABSOLUTE);
+        assertTrue(result1.isEmpty(), "First putIfAbsent should return empty (inserted)");
+
+        // Second putIfAbsent should return existing value
+        Optional<Object> result2 = cache.putIfAbsent("new-key", "value2", Duration.ofMinutes(10), TTLPolicy.ABSOLUTE);
+        assertTrue(result2.isPresent(), "Second putIfAbsent should return existing value");
+        assertEquals("value1", result2.get(), "Should return original value");
+
+        // Verify only original value exists
+        Optional<String> stored = cache.get("new-key", String.class);
+        assertTrue(stored.isPresent());
+        assertEquals("value1", stored.get(), "Original value should be preserved");
+    }
+
+    @Test
+    void testPutIfAbsentPermanentEntry() {
+        PgCacheStore cache = PgCacheStore.builder()
+                .dataSource(dataSource)
+                .autoCreateTable(true)
+                .build();
+
+        cache.clear();
+
+        // First put should succeed (permanent entry)
+        Optional<Object> result1 = cache.putIfAbsent("permanent-key", "value1");
+        assertTrue(result1.isEmpty(), "First putIfAbsent should return empty");
+
+        // Second put should return existing value
+        Optional<Object> result2 = cache.putIfAbsent("permanent-key", "value2");
+        assertTrue(result2.isPresent(), "Second putIfAbsent should return existing");
+        assertEquals("value1", result2.get());
+    }
+
+    @Test
+    void testPutIfAbsentConcurrencyAtomic() throws InterruptedException {
+        PgCacheStore cache = PgCacheStore.builder()
+                .dataSource(dataSource)
+                .autoCreateTable(true)
+                .build();
+
+        cache.clear();
+
+        int threadCount = 10;
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(threadCount);
+        AtomicInteger insertedCount = new AtomicInteger(0);
+        AtomicInteger existingCount = new AtomicInteger(0);
+
+        // All threads try to putIfAbsent the same key at the same time
+        for (int i = 0; i < threadCount; i++) {
+            final int threadId = i;
+            executor.submit(() -> {
+                try {
+                    startLatch.await(); // Wait for signal to start
+                    Optional<Object> result = cache.putIfAbsent(
+                        "concurrent-key",
+                        "value-" + threadId,
+                        Duration.ofMinutes(10),
+                        TTLPolicy.ABSOLUTE
+                    );
+                    if (result.isEmpty()) {
+                        insertedCount.incrementAndGet();
+                    } else {
+                        existingCount.incrementAndGet();
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                } finally {
+                    doneLatch.countDown();
+                }
+            });
+        }
+
+        // Start all threads at once
+        startLatch.countDown();
+        doneLatch.await();
+        executor.shutdown();
+        assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+
+        // Exactly one thread should have inserted
+        assertEquals(1, insertedCount.get(), "Exactly one thread should insert");
+        assertEquals(threadCount - 1, existingCount.get(), "All other threads should see existing value");
+
+        // Verify only one entry exists
+        assertEquals(1, cache.size(), "Should have exactly one entry");
     }
 
     static class TestObject {

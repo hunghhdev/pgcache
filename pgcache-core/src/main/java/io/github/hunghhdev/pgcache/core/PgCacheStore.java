@@ -328,9 +328,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
         
         // Count all non-expired entries (entries with NULL TTL are considered permanent)
-        // Note: This query can be slow on large datasets
+        // Handles both ABSOLUTE and SLIDING TTL policies correctly
         String sql = "SELECT COUNT(*) FROM " + TABLE_NAME +
-                     " WHERE ttl_seconds IS NULL OR (updated_at + (ttl_seconds * interval '1 second')) > now()";
+                     " WHERE ttl_seconds IS NULL" +
+                     " OR (ttl_policy = 'ABSOLUTE' AND (updated_at + (ttl_seconds * interval '1 second')) > now())" +
+                     " OR (ttl_policy = 'SLIDING' AND (last_accessed + (ttl_seconds * interval '1 second')) > now())";
 
         try (Connection conn = getValidatedConnection();
              Statement stmt = conn.createStatement();
@@ -870,6 +872,108 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
         } catch (SQLException e) {
             throw new PgCacheException("Failed to refresh TTL for key: " + key, e);
+        }
+    }
+
+    @Override
+    public <T> Optional<Object> putIfAbsent(String key, T value, Duration ttl, TTLPolicy policy) {
+        if (key == null || key.isEmpty()) {
+            throw new PgCacheException("Cache key cannot be null or empty");
+        }
+
+        // Handle null values based on allowNullValues setting
+        Object valueToStore = value;
+        if (value == null) {
+            if (!allowNullValues) {
+                throw new PgCacheException("Cache value cannot be null (allowNullValues=false)");
+            }
+            valueToStore = NullValueMarker.getInstance();
+        }
+
+        if (ttl == null || ttl.isNegative() || ttl.isZero()) {
+            throw new PgCacheException("TTL must be positive");
+        }
+        if (policy == null) {
+            throw new PgCacheException("TTL policy cannot be null");
+        }
+
+        int ttlSeconds = (int) ttl.getSeconds();
+
+        // Atomic insert - only inserts if key doesn't exist
+        // Uses ON CONFLICT DO NOTHING to avoid race conditions
+        String insertSql = "INSERT INTO " + TABLE_NAME +
+                     " (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
+                     "VALUES (?, ?::jsonb, now(), ?, ?, now()) " +
+                     "ON CONFLICT (key) DO NOTHING";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(insertSql)) {
+
+            String jsonValue = objectMapper.writeValueAsString(valueToStore);
+
+            stmt.setString(1, key);
+            stmt.setString(2, jsonValue);
+            stmt.setInt(3, ttlSeconds);
+            stmt.setString(4, policy.name());
+
+            int inserted = stmt.executeUpdate();
+
+            if (inserted > 0) {
+                // Successfully inserted - key was not present
+                invalidateSizeCache();
+                return Optional.empty();
+            } else {
+                // Key already exists - return the existing value
+                return get(key, Object.class, false);
+            }
+
+        } catch (Exception e) {
+            throw new PgCacheException("Failed to putIfAbsent value in cache", e);
+        }
+    }
+
+    @Override
+    public <T> Optional<Object> putIfAbsent(String key, T value) {
+        if (key == null || key.isEmpty()) {
+            throw new PgCacheException("Cache key cannot be null or empty");
+        }
+
+        // Handle null values based on allowNullValues setting
+        Object valueToStore = value;
+        if (value == null) {
+            if (!allowNullValues) {
+                throw new PgCacheException("Cache value cannot be null (allowNullValues=false)");
+            }
+            valueToStore = NullValueMarker.getInstance();
+        }
+
+        // Atomic insert for permanent entry
+        String insertSql = "INSERT INTO " + TABLE_NAME +
+                     " (key, value, updated_at, ttl_seconds) " +
+                     "VALUES (?, ?::jsonb, now(), NULL) " +
+                     "ON CONFLICT (key) DO NOTHING";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(insertSql)) {
+
+            String jsonValue = objectMapper.writeValueAsString(valueToStore);
+
+            stmt.setString(1, key);
+            stmt.setString(2, jsonValue);
+
+            int inserted = stmt.executeUpdate();
+
+            if (inserted > 0) {
+                // Successfully inserted - key was not present
+                invalidateSizeCache();
+                return Optional.empty();
+            } else {
+                // Key already exists - return the existing value
+                return get(key, Object.class, false);
+            }
+
+        } catch (Exception e) {
+            throw new PgCacheException("Failed to putIfAbsent value in cache", e);
         }
     }
 }

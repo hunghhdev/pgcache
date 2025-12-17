@@ -187,30 +187,35 @@ public class PgCache implements Cache {
         if (key == null) {
             throw new IllegalArgumentException("Cache key cannot be null");
         }
-        
+
         if (value == null && !allowNullValues) {
             return get(key);
         }
-        
+
         try {
             String keyStr = toKeyString(key);
-            
-            // Check if value already exists
-            Optional<Object> optionalExisting = cacheStore.get(keyStr, Object.class);
-            if (optionalExisting.isPresent()) {
-                return new SimpleValueWrapper(optionalExisting.get());
-            }
-            
-            // Put the new value
+
+            // Atomic putIfAbsent - no race condition
+            Optional<Object> existing;
             if (defaultTtl != null) {
-                cacheStore.put(keyStr, value, defaultTtl);
+                existing = cacheStore.putIfAbsent(keyStr, value, defaultTtl, ttlPolicy);
             } else {
-                cacheStore.put(keyStr, value);
+                existing = cacheStore.putIfAbsent(keyStr, value);
             }
-            
+
+            if (existing.isPresent()) {
+                // Key already existed - return the existing value
+                Object existingValue = existing.get();
+                if (existingValue instanceof NullValueMarker) {
+                    return new SimpleValueWrapper(null);
+                }
+                return new SimpleValueWrapper(existingValue);
+            }
+
+            // Successfully inserted
             logger.debug("Put value in cache '{}' for key '{}' (if absent)", name, key);
             return null;
-            
+
         } catch (Exception e) {
             logger.error("Failed to putIfAbsent value in cache '{}' for key '{}': {}", name, key, e.getMessage());
             throw new RuntimeException("Cache putIfAbsent operation failed", e);

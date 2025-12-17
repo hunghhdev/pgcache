@@ -195,4 +195,52 @@ class PgCacheStoreSlidingTTLTest {
         assertTrue(finalResult.isPresent());
         assertEquals(value, finalResult.get());
     }
+
+    @Test
+    void testSizeCountsSlidingTTLEntriesCorrectly() {
+        // Clear cache first
+        cacheStore.clear();
+
+        // Put entries with different TTL policies
+        cacheStore.put("absolute-key", "value1", Duration.ofMinutes(10), TTLPolicy.ABSOLUTE);
+        cacheStore.put("sliding-key", "value2", Duration.ofMinutes(10), TTLPolicy.SLIDING);
+        cacheStore.put("permanent-key", "value3"); // No TTL
+
+        // All 3 should be counted
+        assertEquals(3, cacheStore.size(), "Should count all non-expired entries including sliding TTL");
+    }
+
+    @Test
+    void testSizeWithMixedTTLPolicies() {
+        cacheStore.clear();
+
+        // Add multiple entries of each type
+        for (int i = 0; i < 3; i++) {
+            cacheStore.put("absolute-" + i, "value", Duration.ofMinutes(10), TTLPolicy.ABSOLUTE);
+            cacheStore.put("sliding-" + i, "value", Duration.ofMinutes(10), TTLPolicy.SLIDING);
+            cacheStore.put("permanent-" + i, "value");
+        }
+
+        assertEquals(9, cacheStore.size(), "Should count all 9 entries with mixed TTL policies");
+    }
+
+    @Test
+    void testSizeExcludesExpiredSlidingTTLEntries() throws InterruptedException {
+        cacheStore.clear();
+
+        // Put an entry with very short sliding TTL
+        cacheStore.put("short-sliding", "value", Duration.ofSeconds(1), TTLPolicy.SLIDING);
+        cacheStore.put("long-absolute", "value", Duration.ofMinutes(10), TTLPolicy.ABSOLUTE);
+
+        assertEquals(2, cacheStore.size(), "Both entries should be present initially");
+
+        // Wait for sliding entry to expire
+        Thread.sleep(1500);
+
+        // Invalidate size cache by clearing and re-adding
+        cacheStore.clear();
+        cacheStore.put("fresh-entry", "value", Duration.ofMinutes(10), TTLPolicy.ABSOLUTE);
+
+        assertEquals(1, cacheStore.size(), "Only non-expired entry should be counted");
+    }
 }
