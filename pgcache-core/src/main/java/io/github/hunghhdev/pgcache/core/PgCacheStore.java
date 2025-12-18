@@ -7,10 +7,16 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import javax.sql.DataSource;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -73,6 +79,12 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     // Connection retry configuration
     private static final int MAX_RETRY_ATTEMPTS = 3;
     private static final int RETRY_DELAY_MS = 100;
+
+    // Statistics counters
+    private final AtomicLong hitCount = new AtomicLong(0);
+    private final AtomicLong missCount = new AtomicLong(0);
+    private final AtomicLong putCount = new AtomicLong(0);
+    private final AtomicLong evictionCount = new AtomicLong(0);
 
     /**
      * Creates a PgCacheStore with specified dataSource.
@@ -215,6 +227,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             stmt.setString(2, jsonValue);
 
             stmt.executeUpdate();
+            putCount.incrementAndGet();
             invalidateSizeCache(); // Invalidate size cache on modification
         } catch (Exception e) {
             throw new PgCacheException("Failed to put value in cache", e);
@@ -268,6 +281,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             stmt.setString(4, policy.name());
 
             stmt.executeUpdate();
+            putCount.incrementAndGet();
             invalidateSizeCache(); // Invalidate size cache on modification
         } catch (Exception e) {
             throw new PgCacheException("Failed to put value in cache", e);
@@ -286,8 +300,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
             stmt.setString(1, key);
-            stmt.executeUpdate();
-            invalidateSizeCache(); // Invalidate size cache on modification
+            int deleted = stmt.executeUpdate();
+            if (deleted > 0) {
+                evictionCount.incrementAndGet();
+                invalidateSizeCache(); // Invalidate size cache on modification
+            }
         } catch (SQLException e) {
             throw new PgCacheException("Failed to evict key from cache", e);
         }
@@ -300,7 +317,10 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         try (Connection conn = getValidatedConnection();
              Statement stmt = conn.createStatement()) {
 
-            stmt.executeUpdate(sql);
+            int deleted = stmt.executeUpdate(sql);
+            if (deleted > 0) {
+                evictionCount.addAndGet(deleted);
+            }
             invalidateSizeCache(); // Invalidate size cache on modification
         } catch (SQLException e) {
             throw new PgCacheException("Failed to clear cache", e);
@@ -640,6 +660,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
             try (ResultSet rs = stmt.executeQuery()) {
                 if (!rs.next()) {
+                    missCount.incrementAndGet();
                     return Optional.empty();
                 }
 
@@ -687,6 +708,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                         } catch (Exception evictException) {
                             logger.warn("Failed to evict expired key '{}', continuing with empty result", key, evictException);
                         }
+                        missCount.incrementAndGet();
                         return Optional.empty();
                     }
                 }
@@ -709,12 +731,14 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                         // Caller (e.g., Spring Cache wrapper) should check for this and handle accordingly
                         @SuppressWarnings("unchecked")
                         T marker = (T) NullValueMarker.getInstance();
+                        hitCount.incrementAndGet();
                         return Optional.of(marker);
                     }
                 }
 
                 // Normal deserialization with the requested type
                 T result = objectMapper.readValue(jsonValue, clazz);
+                hitCount.incrementAndGet();
                 return Optional.of(result);
 
             } catch (Exception e) {
@@ -920,6 +944,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
             if (inserted > 0) {
                 // Successfully inserted - key was not present
+                putCount.incrementAndGet();
                 invalidateSizeCache();
                 return Optional.empty();
             } else {
@@ -965,6 +990,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
             if (inserted > 0) {
                 // Successfully inserted - key was not present
+                putCount.incrementAndGet();
                 invalidateSizeCache();
                 return Optional.empty();
             } else {
@@ -975,5 +1001,298 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         } catch (Exception e) {
             throw new PgCacheException("Failed to putIfAbsent value in cache", e);
         }
+    }
+
+    // ==================== Batch Operations (v1.3.0) ====================
+
+    @Override
+    public <T> Map<String, T> getAll(Collection<String> keys, Class<T> clazz) {
+        if (keys == null || keys.isEmpty()) {
+            return new HashMap<>();
+        }
+
+        Map<String, T> results = new HashMap<>();
+        List<String> keyList = new ArrayList<>(keys);
+
+        // Build SQL with placeholders
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT key, value, updated_at, ttl_seconds, ttl_policy, last_accessed FROM ");
+        sql.append(TABLE_NAME);
+        sql.append(" WHERE key IN (");
+        for (int i = 0; i < keyList.size(); i++) {
+            sql.append(i > 0 ? ", ?" : "?");
+        }
+        sql.append(")");
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
+
+            for (int i = 0; i < keyList.size(); i++) {
+                stmt.setString(i + 1, keyList.get(i));
+            }
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    String key = rs.getString("key");
+                    String jsonValue = rs.getString("value");
+                    Instant updatedAt = rs.getTimestamp("updated_at").toInstant();
+                    Integer ttlSeconds = rs.getObject("ttl_seconds", Integer.class);
+                    String ttlPolicyStr = rs.getString("ttl_policy");
+
+                    Instant lastAccessed = updatedAt;
+                    java.sql.Timestamp lastAccessedTs = rs.getTimestamp("last_accessed");
+                    if (lastAccessedTs != null) {
+                        lastAccessed = lastAccessedTs.toInstant();
+                    }
+
+                    TTLPolicy ttlPolicy = TTLPolicy.ABSOLUTE;
+                    if (ttlPolicyStr != null) {
+                        try {
+                            ttlPolicy = TTLPolicy.valueOf(ttlPolicyStr);
+                        } catch (IllegalArgumentException e) {
+                            // Default to ABSOLUTE
+                        }
+                    }
+
+                    // Check expiration
+                    if (ttlSeconds != null) {
+                        boolean expired = (ttlPolicy == TTLPolicy.SLIDING)
+                                ? isExpired(lastAccessed, ttlSeconds)
+                                : isExpired(updatedAt, ttlSeconds);
+                        if (expired) {
+                            continue; // Skip expired entries (counted as miss below)
+                        }
+                    }
+
+                    // Deserialize value
+                    try {
+                        Object rawResult = objectMapper.readValue(jsonValue, Object.class);
+
+                        // Handle null marker
+                        if (allowNullValues && rawResult instanceof java.util.Map) {
+                            @SuppressWarnings("unchecked")
+                            java.util.Map<String, Object> map = (java.util.Map<String, Object>) rawResult;
+                            if (map.size() == 1 && "NULL_MARKER".equals(map.get("marker"))) {
+                                @SuppressWarnings("unchecked")
+                                T marker = (T) NullValueMarker.getInstance();
+                                results.put(key, marker);
+                                continue;
+                            }
+                        }
+
+                        T value = objectMapper.readValue(jsonValue, clazz);
+                        results.put(key, value);
+                    } catch (Exception e) {
+                        logger.warn("Failed to deserialize value for key '{}': {}", key, e.getMessage());
+                    }
+                }
+            }
+
+            // Track statistics: hits for found keys, misses for not found
+            int hits = results.size();
+            int misses = keyList.size() - hits;
+            hitCount.addAndGet(hits);
+            missCount.addAndGet(misses);
+
+            return results;
+
+        } catch (SQLException e) {
+            throw new PgCacheException("Failed to get multiple values from cache", e);
+        }
+    }
+
+    @Override
+    public <T> void putAll(Map<String, T> entries, Duration ttl) {
+        putAll(entries, ttl, TTLPolicy.ABSOLUTE);
+    }
+
+    @Override
+    public <T> void putAll(Map<String, T> entries, Duration ttl, TTLPolicy policy) {
+        if (entries == null || entries.isEmpty()) {
+            return;
+        }
+        if (ttl == null || ttl.isNegative() || ttl.isZero()) {
+            throw new PgCacheException("TTL must be positive");
+        }
+        if (policy == null) {
+            throw new PgCacheException("TTL policy cannot be null");
+        }
+
+        int ttlSeconds = (int) ttl.getSeconds();
+
+        String sql = "INSERT INTO " + TABLE_NAME +
+                     " (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
+                     "VALUES (?, ?::jsonb, now(), ?, ?, now()) " +
+                     "ON CONFLICT (key) DO UPDATE SET " +
+                     "value = EXCLUDED.value, updated_at = now(), ttl_seconds = EXCLUDED.ttl_seconds, " +
+                     "ttl_policy = EXCLUDED.ttl_policy, last_accessed = now()";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            for (Map.Entry<String, T> entry : entries.entrySet()) {
+                String key = entry.getKey();
+                Object value = entry.getValue();
+
+                if (key == null || key.isEmpty()) {
+                    continue;
+                }
+
+                // Handle null values
+                Object valueToStore = value;
+                if (value == null) {
+                    if (!allowNullValues) {
+                        throw new PgCacheException("Cache value cannot be null (allowNullValues=false)");
+                    }
+                    valueToStore = NullValueMarker.getInstance();
+                }
+
+                String jsonValue = objectMapper.writeValueAsString(valueToStore);
+
+                stmt.setString(1, key);
+                stmt.setString(2, jsonValue);
+                stmt.setInt(3, ttlSeconds);
+                stmt.setString(4, policy.name());
+                stmt.addBatch();
+            }
+
+            int[] results = stmt.executeBatch();
+            putCount.addAndGet(results.length);
+            invalidateSizeCache();
+
+        } catch (Exception e) {
+            throw new PgCacheException("Failed to put multiple values in cache", e);
+        }
+    }
+
+    @Override
+    public <T> void putAll(Map<String, T> entries) {
+        if (entries == null || entries.isEmpty()) {
+            return;
+        }
+
+        String sql = "INSERT INTO " + TABLE_NAME +
+                     " (key, value, updated_at, ttl_seconds) " +
+                     "VALUES (?, ?::jsonb, now(), NULL) " +
+                     "ON CONFLICT (key) DO UPDATE SET " +
+                     "value = EXCLUDED.value, updated_at = now(), ttl_seconds = NULL";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            for (Map.Entry<String, T> entry : entries.entrySet()) {
+                String key = entry.getKey();
+                Object value = entry.getValue();
+
+                if (key == null || key.isEmpty()) {
+                    continue;
+                }
+
+                Object valueToStore = value;
+                if (value == null) {
+                    if (!allowNullValues) {
+                        throw new PgCacheException("Cache value cannot be null (allowNullValues=false)");
+                    }
+                    valueToStore = NullValueMarker.getInstance();
+                }
+
+                String jsonValue = objectMapper.writeValueAsString(valueToStore);
+
+                stmt.setString(1, key);
+                stmt.setString(2, jsonValue);
+                stmt.addBatch();
+            }
+
+            int[] results = stmt.executeBatch();
+            putCount.addAndGet(results.length);
+            invalidateSizeCache();
+
+        } catch (Exception e) {
+            throw new PgCacheException("Failed to put multiple values in cache", e);
+        }
+    }
+
+    @Override
+    public int evictAll(Collection<String> keys) {
+        if (keys == null || keys.isEmpty()) {
+            return 0;
+        }
+
+        List<String> keyList = new ArrayList<>(keys);
+
+        StringBuilder sql = new StringBuilder();
+        sql.append("DELETE FROM ").append(TABLE_NAME).append(" WHERE key IN (");
+        for (int i = 0; i < keyList.size(); i++) {
+            sql.append(i > 0 ? ", ?" : "?");
+        }
+        sql.append(")");
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
+
+            for (int i = 0; i < keyList.size(); i++) {
+                stmt.setString(i + 1, keyList.get(i));
+            }
+
+            int deleted = stmt.executeUpdate();
+            if (deleted > 0) {
+                evictionCount.addAndGet(deleted);
+                invalidateSizeCache();
+            }
+            return deleted;
+
+        } catch (SQLException e) {
+            throw new PgCacheException("Failed to evict multiple keys from cache", e);
+        }
+    }
+
+    // ==================== Pattern Operations (v1.3.0) ====================
+
+    @Override
+    public int evictByPattern(String pattern) {
+        if (pattern == null || pattern.isEmpty()) {
+            throw new PgCacheException("Pattern cannot be null or empty");
+        }
+
+        String sql = "DELETE FROM " + TABLE_NAME + " WHERE key LIKE ?";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, pattern);
+            int deleted = stmt.executeUpdate();
+
+            if (deleted > 0) {
+                evictionCount.addAndGet(deleted);
+                invalidateSizeCache();
+                logger.debug("Evicted {} entries matching pattern '{}'", deleted, pattern);
+            }
+
+            return deleted;
+
+        } catch (SQLException e) {
+            throw new PgCacheException("Failed to evict entries by pattern: " + pattern, e);
+        }
+    }
+
+    // ==================== Cache Statistics (v1.3.0) ====================
+
+    @Override
+    public CacheStatistics getStatistics() {
+        return new CacheStatistics(
+            hitCount.get(),
+            missCount.get(),
+            putCount.get(),
+            evictionCount.get()
+        );
+    }
+
+    @Override
+    public void resetStatistics() {
+        hitCount.set(0);
+        missCount.set(0);
+        putCount.set(0);
+        evictionCount.set(0);
+        logger.debug("Cache statistics reset");
     }
 }

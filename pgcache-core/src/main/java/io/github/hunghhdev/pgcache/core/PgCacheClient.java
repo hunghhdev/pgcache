@@ -1,6 +1,8 @@
 package io.github.hunghhdev.pgcache.core;
 
 import java.time.Duration;
+import java.util.Collection;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -93,4 +95,83 @@ public interface PgCacheClient {
     void evict(String key);
     void clear();
     int size();
+
+    // ==================== Batch Operations (v1.3.0) ====================
+
+    /**
+     * Gets multiple values from the cache in a single operation.
+     * <p>Note: This method does NOT refresh TTL for sliding TTL entries (for performance).
+     * Use individual {@link #get(String, Class)} calls if TTL refresh is needed.</p>
+     * @param keys the cache keys to retrieve
+     * @param clazz the class type of the cached values
+     * @return map of key to value for keys that exist and are not expired
+     * @since 1.3.0
+     */
+    <T> Map<String, T> getAll(Collection<String> keys, Class<T> clazz);
+
+    /**
+     * Puts multiple values in the cache with specified TTL.
+     * @param entries map of key to value
+     * @param ttl time to live duration
+     * @since 1.3.0
+     */
+    <T> void putAll(Map<String, T> entries, Duration ttl);
+
+    /**
+     * Puts multiple values in the cache with specified TTL and policy.
+     * @param entries map of key to value
+     * @param ttl time to live duration
+     * @param policy the TTL policy (ABSOLUTE or SLIDING)
+     * @since 1.3.0
+     */
+    <T> void putAll(Map<String, T> entries, Duration ttl, TTLPolicy policy);
+
+    /**
+     * Puts multiple permanent values in the cache (no TTL).
+     * @param entries map of key to value
+     * @since 1.3.0
+     */
+    <T> void putAll(Map<String, T> entries);
+
+    /**
+     * Evicts multiple keys from the cache.
+     * @param keys the keys to evict
+     * @return number of keys actually evicted
+     * @since 1.3.0
+     */
+    int evictAll(Collection<String> keys);
+
+    // ==================== Cache Statistics (v1.3.0) ====================
+
+    /**
+     * Returns cache statistics including hit/miss counts and rates.
+     * @return current cache statistics
+     * @since 1.3.0
+     */
+    CacheStatistics getStatistics();
+
+    /**
+     * Resets all cache statistics counters to zero.
+     * @since 1.3.0
+     */
+    void resetStatistics();
+
+    // ==================== Pattern Operations (v1.3.0) ====================
+
+    /**
+     * Evicts all cache entries matching the given pattern.
+     * Uses SQL LIKE pattern matching (% for any characters, _ for single character).
+     *
+     * <p>Example patterns:</p>
+     * <ul>
+     *   <li>"user:%" - matches all keys starting with "user:"</li>
+     *   <li>"%:session" - matches all keys ending with ":session"</li>
+     *   <li>"cache:%" - matches all keys in the "cache:" namespace</li>
+     * </ul>
+     *
+     * @param pattern SQL LIKE pattern to match keys
+     * @return number of entries evicted
+     * @since 1.3.0
+     */
+    int evictByPattern(String pattern);
 }

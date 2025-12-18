@@ -1,5 +1,6 @@
 package io.github.hunghhdev.pgcache.spring;
 
+import io.github.hunghhdev.pgcache.core.CacheStatistics;
 import io.github.hunghhdev.pgcache.core.NullValueMarker;
 import io.github.hunghhdev.pgcache.core.PgCacheStore;
 import io.github.hunghhdev.pgcache.core.TTLPolicy;
@@ -429,7 +430,7 @@ public class PgCache implements Cache {
         if (key == null) {
             return false;
         }
-        
+
         try {
             String keyStr = toKeyString(key);
             return cacheStore.refreshTTL(keyStr, newTtl);
@@ -438,7 +439,61 @@ public class PgCache implements Cache {
             return false;
         }
     }
-    
+
+    // ==================== Statistics (v1.3.0) ====================
+
+    /**
+     * Get cache statistics including hit/miss counts and rates.
+     * Note: Statistics are shared across all caches using the same PgCacheStore.
+     *
+     * @return current cache statistics
+     * @since 1.3.0
+     */
+    public CacheStatistics getStatistics() {
+        return cacheStore.getStatistics();
+    }
+
+    /**
+     * Reset all cache statistics counters to zero.
+     *
+     * @since 1.3.0
+     */
+    public void resetStatistics() {
+        cacheStore.resetStatistics();
+        logger.debug("Reset statistics for cache '{}'", name);
+    }
+
+    // ==================== Pattern Operations (v1.3.0) ====================
+
+    /**
+     * Evict all entries in this cache matching the given pattern.
+     * The pattern is automatically prefixed with the cache name.
+     * Uses SQL LIKE pattern matching (% for any characters, _ for single character).
+     *
+     * <p>Example: For cache named "users", calling evictByPattern("admin:%")
+     * will evict all keys matching "users:admin:%"</p>
+     *
+     * @param pattern SQL LIKE pattern to match keys (will be prefixed with cache name)
+     * @return number of entries evicted
+     * @since 1.3.0
+     */
+    public int evictByPattern(String pattern) {
+        if (pattern == null || pattern.isEmpty()) {
+            return 0;
+        }
+
+        try {
+            // Prefix pattern with cache name for scoped eviction
+            String scopedPattern = name + ":" + pattern;
+            int evicted = cacheStore.evictByPattern(scopedPattern);
+            logger.debug("Evicted {} entries from cache '{}' matching pattern '{}'", evicted, name, pattern);
+            return evicted;
+        } catch (Exception e) {
+            logger.warn("Failed to evict by pattern '{}' from cache '{}': {}", pattern, name, e.getMessage());
+            return 0;
+        }
+    }
+
     /**
      * Convert key to string representation for storage.
      */

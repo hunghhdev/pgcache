@@ -9,6 +9,9 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -197,6 +200,173 @@ class PgCacheStoreIntegrationTest {
 
         // Only permanent entry should remain in count
         assertEquals(1, cacheStore.size());
+    }
+
+    // ==================== Batch Operations Tests (v1.3.0) ====================
+
+    @Test
+    void testGetAll() {
+        // Arrange
+        String key1 = "batch-get-1";
+        String key2 = "batch-get-2";
+        String key3 = "batch-get-3";
+
+        cacheStore.put(key1, new TestUser("User1", 21), Duration.ofMinutes(5));
+        cacheStore.put(key2, new TestUser("User2", 22), Duration.ofMinutes(5));
+        // key3 not put
+
+        // Act
+        Map<String, TestUser> results = cacheStore.getAll(
+            Arrays.asList(key1, key2, key3), TestUser.class);
+
+        // Assert
+        assertEquals(2, results.size());
+        assertTrue(results.containsKey(key1));
+        assertTrue(results.containsKey(key2));
+        assertFalse(results.containsKey(key3));
+        assertEquals("User1", results.get(key1).getName());
+        assertEquals("User2", results.get(key2).getName());
+    }
+
+    @Test
+    void testPutAll() {
+        // Arrange
+        Map<String, TestUser> entries = new HashMap<>();
+        entries.put("batch-put-1", new TestUser("User1", 31));
+        entries.put("batch-put-2", new TestUser("User2", 32));
+        entries.put("batch-put-3", new TestUser("User3", 33));
+
+        // Act
+        cacheStore.putAll(entries, Duration.ofMinutes(5));
+
+        // Assert
+        assertEquals(3, cacheStore.size());
+        assertTrue(cacheStore.get("batch-put-1", TestUser.class).isPresent());
+        assertTrue(cacheStore.get("batch-put-2", TestUser.class).isPresent());
+        assertTrue(cacheStore.get("batch-put-3", TestUser.class).isPresent());
+    }
+
+    @Test
+    void testPutAllPermanent() {
+        // Arrange
+        Map<String, TestUser> entries = new HashMap<>();
+        entries.put("perm-1", new TestUser("User1", 41));
+        entries.put("perm-2", new TestUser("User2", 42));
+
+        // Act
+        cacheStore.putAll(entries);
+
+        // Assert
+        assertEquals(2, cacheStore.size());
+        assertTrue(cacheStore.get("perm-1", TestUser.class).isPresent());
+    }
+
+    @Test
+    void testEvictAll() {
+        // Arrange
+        cacheStore.put("evict-all-1", new TestUser("User1", 51), Duration.ofMinutes(5));
+        cacheStore.put("evict-all-2", new TestUser("User2", 52), Duration.ofMinutes(5));
+        cacheStore.put("evict-all-3", new TestUser("User3", 53), Duration.ofMinutes(5));
+
+        // Act
+        int evicted = cacheStore.evictAll(Arrays.asList("evict-all-1", "evict-all-2", "evict-all-missing"));
+
+        // Assert
+        assertEquals(2, evicted);
+        assertFalse(cacheStore.get("evict-all-1", TestUser.class).isPresent());
+        assertFalse(cacheStore.get("evict-all-2", TestUser.class).isPresent());
+        assertTrue(cacheStore.get("evict-all-3", TestUser.class).isPresent());
+    }
+
+    // ==================== Cache Statistics Tests (v1.3.0) ====================
+
+    @Test
+    void testCacheStatistics() {
+        // Arrange
+        cacheStore.resetStatistics();
+        String key1 = "stats-key-1";
+        String key2 = "stats-key-2";
+
+        // Act - Some puts
+        cacheStore.put(key1, new TestUser("User1", 61), Duration.ofMinutes(5));
+        cacheStore.put(key2, new TestUser("User2", 62), Duration.ofMinutes(5));
+
+        // Some hits
+        cacheStore.get(key1, TestUser.class);
+        cacheStore.get(key2, TestUser.class);
+
+        // Some misses
+        cacheStore.get("nonexistent-1", TestUser.class);
+        cacheStore.get("nonexistent-2", TestUser.class);
+
+        // Eviction
+        cacheStore.evict(key1);
+
+        // Assert
+        CacheStatistics stats = cacheStore.getStatistics();
+        assertEquals(2, stats.getPutCount());
+        assertEquals(2, stats.getHitCount());
+        assertEquals(2, stats.getMissCount());
+        assertEquals(1, stats.getEvictionCount());
+        assertEquals(4, stats.getRequestCount());
+        assertEquals(0.5, stats.getHitRate(), 0.001);
+    }
+
+    @Test
+    void testResetStatistics() {
+        // Arrange - Do some operations
+        cacheStore.put("reset-key", new TestUser("User", 71), Duration.ofMinutes(5));
+        cacheStore.get("reset-key", TestUser.class);
+
+        // Verify stats are not zero
+        CacheStatistics before = cacheStore.getStatistics();
+        assertTrue(before.getPutCount() > 0 || before.getHitCount() > 0);
+
+        // Act
+        cacheStore.resetStatistics();
+
+        // Assert
+        CacheStatistics after = cacheStore.getStatistics();
+        assertEquals(0, after.getPutCount());
+        assertEquals(0, after.getHitCount());
+        assertEquals(0, after.getMissCount());
+        assertEquals(0, after.getEvictionCount());
+    }
+
+    // ==================== Pattern Eviction Tests (v1.3.0) ====================
+
+    @Test
+    void testEvictByPattern() {
+        // Arrange
+        cacheStore.put("user:1", new TestUser("User1", 81), Duration.ofMinutes(5));
+        cacheStore.put("user:2", new TestUser("User2", 82), Duration.ofMinutes(5));
+        cacheStore.put("user:3", new TestUser("User3", 83), Duration.ofMinutes(5));
+        cacheStore.put("session:1", new TestUser("Session1", 84), Duration.ofMinutes(5));
+        cacheStore.put("session:2", new TestUser("Session2", 85), Duration.ofMinutes(5));
+
+        // Act - Evict all user: entries
+        int evicted = cacheStore.evictByPattern("user:%");
+
+        // Assert
+        assertEquals(3, evicted);
+        assertFalse(cacheStore.get("user:1", TestUser.class).isPresent());
+        assertFalse(cacheStore.get("user:2", TestUser.class).isPresent());
+        assertFalse(cacheStore.get("user:3", TestUser.class).isPresent());
+        assertTrue(cacheStore.get("session:1", TestUser.class).isPresent());
+        assertTrue(cacheStore.get("session:2", TestUser.class).isPresent());
+    }
+
+    @Test
+    void testEvictByPatternNoMatch() {
+        // Arrange
+        cacheStore.put("data:1", new TestUser("Data1", 91), Duration.ofMinutes(5));
+
+        // Act
+        int evicted = cacheStore.evictByPattern("nonexistent:%");
+
+        // Assert
+        assertEquals(0, evicted);
+        assertTrue(cacheStore.get("data:1", TestUser.class).isPresent());
     }
 
     static class TestUser {

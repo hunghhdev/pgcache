@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2025-12-18
+
+### Added
+- **Batch Operations** - Efficient multi-key operations for reduced database roundtrips
+  - `getAll(Collection<String> keys, Class<T> clazz)` - retrieve multiple values in one query
+  - `putAll(Map<String, T> entries, Duration ttl)` - store multiple entries with TTL
+  - `putAll(Map<String, T> entries, Duration ttl, TTLPolicy policy)` - store with TTL policy
+  - `putAll(Map<String, T> entries)` - store permanent entries
+  - `evictAll(Collection<String> keys)` - remove multiple entries in one operation
+
+- **Cache Statistics** - Monitor cache performance with hit/miss tracking
+  - `CacheStatistics` class with hit count, miss count, put count, eviction count
+  - `getStatistics()` - retrieve current statistics
+  - `resetStatistics()` - reset all counters to zero
+  - Hit rate calculation via `getHitRate()` and `getMissRate()`
+
+- **Pattern-Based Eviction** - Evict cache entries by key pattern
+  - `evictByPattern(String pattern)` - remove all keys matching SQL LIKE pattern
+  - Example: `evictByPattern("user:%")` removes all keys starting with "user:"
+
+### Changed
+- Statistics tracking integrated into all cache operations (get, put, evict)
+- Internal counters use `AtomicLong` for thread-safe statistics
+
+---
+
 ## [1.2.2] - 2025-12-17
 
 ### Fixed
@@ -228,11 +254,7 @@ None in this release.
 
 ## Known Issues
 
-1. **Null Value Support**: Even with `allowNullValues=true`, null values are not properly cached
-   - **Workaround**: Avoid caching null values
-   - **Fix**: Planned for 1.3.0 with null marker pattern
-
-2. **Size Performance**: Still slow on very large datasets (>1M entries) even with caching
+1. **Size Performance**: Still slow on very large datasets (>1M entries) even with caching
    - **Workaround**: Avoid frequent size() calls on large caches
    - **Fix**: Consider approximate count in future release
 
@@ -240,15 +262,13 @@ None in this release.
 
 ## Roadmap
 
-### 1.3.0 (Planned)
-- Null value support with marker pattern
-- Batch operations API (`putAll`, `getAll`)
+### 1.4.0 (Planned)
 - Micrometer metrics integration
 - Spring Boot 3 support
 - Performance benchmarks
-
-### 1.4.0 (Planned)
 - Distributed cache coordination
+
+### 1.5.0 (Planned)
 - Cache event listeners
 - Compression support for large values
 - Query API for JSONB fields
