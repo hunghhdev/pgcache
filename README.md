@@ -1,7 +1,7 @@
 # PgCache
 
 [![Java](https://img.shields.io/badge/Java-11%2B-blue.svg)](https://www.oracle.com/java/)
-[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.2.1-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache-core)
+[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.3.0-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 **A simple caching library that uses your existing PostgreSQL as cache backend.**
@@ -39,6 +39,9 @@ Perfect for small-to-medium applications that want caching without the complexit
 - **Spring Boot integration** - Works with `@Cacheable`, `@CacheEvict`, etc.
 - **Sliding TTL** - Active entries stay cached longer (like Redis)
 - **Null value caching** - Properly cache null results
+- **Batch operations** - `getAll`, `putAll`, `evictAll` for efficiency
+- **Cache statistics** - Hit/miss counts, hit rate monitoring
+- **Pattern eviction** - Evict keys by pattern (e.g., `user:%`)
 - **JSONB storage** - Efficient storage with PostgreSQL's native JSON
 - **UNLOGGED tables** - Optimized for cache performance
 - **Background cleanup** - Automatic expired entry removal
@@ -52,14 +55,14 @@ Perfect for small-to-medium applications that want caching without the complexit
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-core</artifactId>
-  <version>1.2.1</version>
+  <version>1.3.0</version>
 </dependency>
 
 <!-- Spring Boot integration -->
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-spring</artifactId>
-  <version>1.2.1</version>
+  <version>1.3.0</version>
 </dependency>
 ```
 
@@ -129,6 +132,45 @@ Optional<User> user = cache.get("user:123", User.class);
 cache.evict("user:123");
 ```
 
+### Batch Operations (v1.3.0)
+
+```java
+// Get multiple values at once
+Map<String, User> users = cache.getAll(
+    Arrays.asList("user:1", "user:2", "user:3"),
+    User.class
+);
+
+// Put multiple values
+Map<String, User> entries = Map.of(
+    "user:1", user1,
+    "user:2", user2,
+    "user:3", user3
+);
+cache.putAll(entries, Duration.ofHours(1));
+
+// Evict multiple keys
+cache.evictAll(Arrays.asList("user:1", "user:2"));
+
+// Evict by pattern - remove all keys starting with "user:"
+cache.evictByPattern("user:%");
+```
+
+### Cache Statistics (v1.3.0)
+
+```java
+CacheStatistics stats = cache.getStatistics();
+
+System.out.println("Hits: " + stats.getHitCount());
+System.out.println("Misses: " + stats.getMissCount());
+System.out.println("Hit Rate: " + stats.getHitRate());  // 0.0 - 1.0
+System.out.println("Puts: " + stats.getPutCount());
+System.out.println("Evictions: " + stats.getEvictionCount());
+
+// Reset statistics
+cache.resetStatistics();
+```
+
 ## Sliding vs Absolute TTL
 
 ```java
@@ -185,9 +227,14 @@ CREATE UNLOGGED TABLE pgcache_store (
 
 ## Migration
 
-### From 1.2.0 to 1.2.1
+### From 1.2.x to 1.3.0
 
 No database changes required. Just update the dependency version.
+
+New APIs available:
+- `getAll()`, `putAll()`, `evictAll()` - Batch operations
+- `getStatistics()`, `resetStatistics()` - Cache statistics
+- `evictByPattern()` - Pattern-based eviction
 
 ### From 1.0.x/1.1.x to 1.2.x
 
