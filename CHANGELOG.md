@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2025-12-18
+
+### Added
+- **Micrometer Metrics Integration** - Expose cache statistics via Micrometer
+  - `PgCacheMetrics` class implementing `MeterBinder`
+  - Auto-configuration when Micrometer is on classpath
+  - Metrics exposed:
+    - `pgcache.gets` (counter, tagged by result: hit/miss)
+    - `pgcache.puts` (counter)
+    - `pgcache.evictions` (counter)
+    - `pgcache.size` (gauge)
+    - `pgcache.hit.rate` (gauge)
+
+### Changed
+- Added `micrometer-core` as optional dependency to pgcache-spring
+
+---
+
 ## [1.3.0] - 2025-12-18
 
 ### Added
@@ -262,13 +280,12 @@ None in this release.
 
 ## Roadmap
 
-### 1.4.0 (Planned)
-- Micrometer metrics integration
+### 1.5.0 (Planned)
 - Spring Boot 3 support
 - Performance benchmarks
-- Distributed cache coordination
+- Keys listing API (`getKeys()`, `getKeysByPattern()`)
 
-### 1.5.0 (Planned)
+### 1.6.0 (Planned)
 - Cache event listeners
 - Compression support for large values
 - Query API for JSONB fields

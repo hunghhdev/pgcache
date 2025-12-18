@@ -20,6 +20,10 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import io.github.hunghhdev.pgcache.core.CacheStatistics;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import javax.sql.DataSource;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -206,7 +210,7 @@ class PgCacheSpringIntegrationTest {
     void testGetWithValueLoader() {
         Cache cache = cacheManager.getCache("test-cache");
         AtomicInteger counter = new AtomicInteger(0);
-        
+
         // First call should load value
         String result1 = cache.get("key1", () -> {
             counter.incrementAndGet();
@@ -214,7 +218,7 @@ class PgCacheSpringIntegrationTest {
         });
         assertEquals("loaded-value", result1);
         assertEquals(1, counter.get());
-        
+
         // Second call should return cached value
         String result2 = cache.get("key1", () -> {
             counter.incrementAndGet();
@@ -223,7 +227,40 @@ class PgCacheSpringIntegrationTest {
         assertEquals("loaded-value", result2);
         assertEquals(1, counter.get()); // Should not increment
     }
-    
+
+    @Test
+    void testMicrometerMetrics() {
+        PgCache cache = (PgCache) cacheManager.getCache("metrics-test-cache");
+        cache.resetStatistics();
+
+        // Perform some operations
+        cache.put("key1", "value1");
+        cache.put("key2", "value2");
+        cache.get("key1");  // hit
+        cache.get("key2");  // hit
+        cache.get("nonexistent");  // miss
+        cache.evict("key1");
+
+        // Verify statistics
+        CacheStatistics stats = cache.getStatistics();
+        assertEquals(2, stats.getPutCount());
+        assertEquals(2, stats.getHitCount());
+        assertEquals(1, stats.getMissCount());
+        assertEquals(1, stats.getEvictionCount());
+
+        // Test Micrometer binding
+        MeterRegistry registry = new SimpleMeterRegistry();
+        PgCacheMetrics.monitor(cache, registry);
+
+        // Verify meters are registered
+        assertNotNull(registry.find("pgcache.gets").tag("result", "hit").functionCounter());
+        assertNotNull(registry.find("pgcache.gets").tag("result", "miss").functionCounter());
+        assertNotNull(registry.find("pgcache.puts").functionCounter());
+        assertNotNull(registry.find("pgcache.evictions").functionCounter());
+        assertNotNull(registry.find("pgcache.size").gauge());
+        assertNotNull(registry.find("pgcache.hit.rate").gauge());
+    }
+
     @Configuration
     @EnableCaching
     static class TestConfig {

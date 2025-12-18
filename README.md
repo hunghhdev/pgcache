@@ -1,7 +1,7 @@
 # PgCache
 
 [![Java](https://img.shields.io/badge/Java-11%2B-blue.svg)](https://www.oracle.com/java/)
-[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.3.0-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache)
+[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.4.0-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 **A simple caching library that uses your existing PostgreSQL as cache backend.**
@@ -41,6 +41,7 @@ Perfect for small-to-medium applications that want caching without the complexit
 - **Null value caching** - Properly cache null results
 - **Batch operations** - `getAll`, `putAll`, `evictAll` for efficiency
 - **Cache statistics** - Hit/miss counts, hit rate monitoring
+- **Micrometer metrics** - Auto-configured metrics for monitoring
 - **Pattern eviction** - Evict keys by pattern (e.g., `user:%`)
 - **JSONB storage** - Efficient storage with PostgreSQL's native JSON
 - **UNLOGGED tables** - Optimized for cache performance
@@ -55,14 +56,14 @@ Perfect for small-to-medium applications that want caching without the complexit
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-core</artifactId>
-  <version>1.3.0</version>
+  <version>1.4.0</version>
 </dependency>
 
 <!-- Spring Boot integration -->
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-spring</artifactId>
-  <version>1.3.0</version>
+  <version>1.4.0</version>
 </dependency>
 ```
 
@@ -171,6 +172,33 @@ System.out.println("Evictions: " + stats.getEvictionCount());
 cache.resetStatistics();
 ```
 
+### Micrometer Metrics (v1.4.0)
+
+When using `pgcache-spring` with Micrometer on the classpath, metrics are auto-configured:
+
+```yaml
+# application.yml - metrics available at /actuator/metrics
+management:
+  endpoints:
+    web:
+      exposure:
+        include: metrics,health
+```
+
+**Available metrics:**
+- `pgcache.gets` (counter, tagged: `result=hit|miss`, `cache=<name>`)
+- `pgcache.puts` (counter)
+- `pgcache.evictions` (counter)
+- `pgcache.size` (gauge)
+- `pgcache.hit.rate` (gauge, 0.0 - 1.0)
+
+**Manual binding** (without auto-configuration):
+```java
+MeterRegistry registry = ...;
+PgCache cache = (PgCache) cacheManager.getCache("myCache");
+PgCacheMetrics.monitor(cache, registry);
+```
+
 ## Sliding vs Absolute TTL
 
 ```java
@@ -226,6 +254,14 @@ CREATE UNLOGGED TABLE pgcache_store (
 ```
 
 ## Migration
+
+### From 1.3.x to 1.4.0
+
+No database changes required. Just update the dependency version.
+
+New features:
+- Micrometer metrics integration (auto-configured when Micrometer is on classpath)
+- `PgCacheMetrics` class for manual metric binding
 
 ### From 1.2.x to 1.3.0
 
