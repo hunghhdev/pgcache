@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2025-12-18
+
+### Added
+- **Quarkus Integration** - New `pgcache-quarkus` module for Quarkus framework support
+  - `PgQuarkusCache` implementing Quarkus Cache SPI with Mutiny Uni support
+  - `PgQuarkusCacheManager` for managing multiple caches
+  - CDI configuration via `@ConfigMapping` with `pgcache.*` properties
+  - Background cleanup support
+  - Per-cache TTL and TTL policy configuration
+
+### Configuration (Quarkus)
+```properties
+# application.properties
+pgcache.default-ttl=PT1H
+pgcache.allow-null-values=true
+pgcache.ttl-policy=ABSOLUTE
+pgcache.background-cleanup.enabled=true
+pgcache.background-cleanup.interval=PT30M
+
+# Per-cache settings
+pgcache.caches.users.ttl=PT2H
+pgcache.caches.users.ttl-policy=SLIDING
+```
+
+---
+
 ## [1.4.0] - 2025-12-18
 
 ### Added

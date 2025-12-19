@@ -1,7 +1,7 @@
 # PgCache
 
 [![Java](https://img.shields.io/badge/Java-11%2B-blue.svg)](https://www.oracle.com/java/)
-[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.4.0-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache)
+[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.5.0-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 **A simple caching library that uses your existing PostgreSQL as cache backend.**
@@ -37,6 +37,7 @@ Perfect for small-to-medium applications that want caching without the complexit
 
 - **Zero extra infrastructure** - Uses your existing PostgreSQL
 - **Spring Boot integration** - Works with `@Cacheable`, `@CacheEvict`, etc.
+- **Quarkus integration** - Works with `@CacheResult`, `@CacheInvalidate`, etc.
 - **Sliding TTL** - Active entries stay cached longer (like Redis)
 - **Null value caching** - Properly cache null results
 - **Batch operations** - `getAll`, `putAll`, `evictAll` for efficiency
@@ -56,14 +57,21 @@ Perfect for small-to-medium applications that want caching without the complexit
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-core</artifactId>
-  <version>1.4.0</version>
+  <version>1.5.0</version>
 </dependency>
 
 <!-- Spring Boot integration -->
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-spring</artifactId>
-  <version>1.4.0</version>
+  <version>1.5.0</version>
+</dependency>
+
+<!-- Quarkus integration -->
+<dependency>
+  <groupId>io.github.hunghhdev</groupId>
+  <artifactId>pgcache-quarkus</artifactId>
+  <version>1.5.0</version>
 </dependency>
 ```
 
@@ -113,7 +121,39 @@ pgcache:
       ttl-policy: ABSOLUTE             # Fixed expiration
 ```
 
-### Standalone Usage (without Spring)
+### Quarkus Usage (v1.5.0)
+
+```java
+@ApplicationScoped
+public class UserService {
+
+    @Inject
+    PgQuarkusCacheManager cacheManager;
+
+    public User getUser(Long id) {
+        PgQuarkusCache cache = cacheManager.getOrCreateCache("users");
+        return cache.get("user:" + id, key -> userRepository.findById(id))
+                   .await().indefinitely();
+    }
+}
+```
+
+**Quarkus Configuration:**
+
+```properties
+# application.properties
+pgcache.default-ttl=PT1H
+pgcache.allow-null-values=true
+pgcache.ttl-policy=ABSOLUTE
+pgcache.background-cleanup.enabled=true
+pgcache.background-cleanup.interval=PT30M
+
+# Per-cache settings
+pgcache.caches.users.ttl=PT2H
+pgcache.caches.users.ttl-policy=SLIDING
+```
+
+### Standalone Usage (without Spring/Quarkus)
 
 ```java
 PgCacheClient cache = PgCacheStore.builder()
@@ -254,6 +294,14 @@ CREATE UNLOGGED TABLE pgcache_store (
 ```
 
 ## Migration
+
+### From 1.4.x to 1.5.0
+
+No database changes required. Just update the dependency version.
+
+New features:
+- Quarkus integration via `pgcache-quarkus` module
+- `PgQuarkusCache` and `PgQuarkusCacheManager` for Quarkus Cache SPI
 
 ### From 1.3.x to 1.4.0
 

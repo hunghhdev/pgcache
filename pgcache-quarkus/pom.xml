@@ -10,10 +10,14 @@
         <version>1.5.0</version>
     </parent>
 
-    <artifactId>pgcache-spring</artifactId>
+    <artifactId>pgcache-quarkus</artifactId>
     <version>1.5.0</version>
-    <name>PgCache Spring Integration</name>
-    <description>Spring Framework integration for PgCache</description>
+    <name>PgCache Quarkus Integration</name>
+    <description>Quarkus integration for PgCache</description>
+
+    <properties>
+        <quarkus.version>3.6.4</quarkus.version>
+    </properties>
 
     <dependencies>
         <!-- PgCache Core -->
@@ -23,48 +27,40 @@
             <version>${project.version}</version>
         </dependency>
 
-        <!-- Spring Framework -->
+        <!-- Quarkus Cache -->
         <dependency>
-            <groupId>org.springframework</groupId>
-            <artifactId>spring-context</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework</groupId>
-            <artifactId>spring-context-support</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework</groupId>
-            <artifactId>spring-jdbc</artifactId>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-cache</artifactId>
+            <version>${quarkus.version}</version>
         </dependency>
 
-        <!-- Spring Boot Auto-configuration -->
+        <!-- Quarkus CDI / Arc -->
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-autoconfigure</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-configuration-processor</artifactId>
-            <optional>true</optional>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-arc</artifactId>
+            <version>${quarkus.version}</version>
         </dependency>
 
-        <!-- Spring Boot Actuator (optional) -->
+        <!-- Quarkus Config -->
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-actuator</artifactId>
-            <optional>true</optional>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-core</artifactId>
+            <version>${quarkus.version}</version>
         </dependency>
+
+        <!-- Quarkus Agroal (DataSource) -->
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-actuator-autoconfigure</artifactId>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-agroal</artifactId>
+            <version>${quarkus.version}</version>
             <optional>true</optional>
         </dependency>
 
-        <!-- Micrometer Metrics (optional) -->
+        <!-- Smallrye Config for @ConfigMapping -->
         <dependency>
-            <groupId>io.micrometer</groupId>
-            <artifactId>micrometer-core</artifactId>
-            <optional>true</optional>
+            <groupId>io.smallrye.config</groupId>
+            <artifactId>smallrye-config</artifactId>
+            <version>3.4.4</version>
         </dependency>
 
         <!-- Logging -->
@@ -74,11 +70,6 @@
         </dependency>
 
         <!-- Test dependencies -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-test</artifactId>
-            <scope>test</scope>
-        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
@@ -95,19 +86,12 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- PostgreSQL and connection pooling for tests -->
+        <!-- PostgreSQL for tests -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
-        <dependency>
-            <groupId>com.zaxxer</groupId>
-            <artifactId>HikariCP</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <!-- TestContainers for integration tests -->
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers</artifactId>
