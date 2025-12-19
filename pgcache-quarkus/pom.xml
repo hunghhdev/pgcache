@@ -7,11 +7,11 @@
     <parent>
         <groupId>io.github.hunghhdev</groupId>
         <artifactId>pgcache</artifactId>
-        <version>1.5.0</version>
+        <version>1.5.1</version>
     </parent>
 
     <artifactId>pgcache-quarkus</artifactId>
-    <version>1.5.0</version>
+    <version>1.5.1</version>
     <name>PgCache Quarkus Integration</name>
     <description>Quarkus integration for PgCache</description>
 
@@ -27,46 +27,40 @@
             <version>${project.version}</version>
         </dependency>
 
-        <!-- Quarkus Cache -->
+        <!-- Quarkus dependencies - provided scope since user's Quarkus app already has them -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-cache</artifactId>
             <version>${quarkus.version}</version>
+            <scope>provided</scope>
         </dependency>
 
-        <!-- Quarkus CDI / Arc -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-arc</artifactId>
             <version>${quarkus.version}</version>
+            <scope>provided</scope>
         </dependency>
 
-        <!-- Quarkus Config -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-core</artifactId>
             <version>${quarkus.version}</version>
+            <scope>provided</scope>
         </dependency>
 
-        <!-- Quarkus Agroal (DataSource) -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-agroal</artifactId>
             <version>${quarkus.version}</version>
-            <optional>true</optional>
-        </dependency>
-
-        <!-- Smallrye Config for @ConfigMapping -->
-        <dependency>
-            <groupId>io.smallrye.config</groupId>
-            <artifactId>smallrye-config</artifactId>
-            <version>3.4.4</version>
+            <scope>provided</scope>
         </dependency>
 
         <!-- Logging -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
+            <scope>provided</scope>
         </dependency>
 
         <!-- Test dependencies -->

@@ -6,20 +6,21 @@
     <parent>
         <groupId>io.github.hunghhdev</groupId>
         <artifactId>pgcache</artifactId>
-        <version>1.5.0</version>
+        <version>1.5.1</version>
     </parent>
 
     <artifactId>pgcache-core</artifactId>
-    <version>1.5.0</version>
+    <version>1.5.1</version>
     <packaging>jar</packaging>
     <name>PgCache Core</name>
     <description>Core Java cache library (no Spring dependency)</description>
 
     <dependencies>
-        <!-- PostgreSQL JDBC Driver -->
+        <!-- PostgreSQL JDBC Driver - provided by user's project -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
+            <scope>provided</scope>
         </dependency>
 
         <!-- Jackson for JSON serialization/deserialization -->
@@ -28,10 +29,11 @@
             <artifactId>jackson-databind</artifactId>
         </dependency>
 
-        <!-- Logging -->
+        <!-- Logging - provided by user's framework -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
+            <scope>provided</scope>
         </dependency>
 
         <!-- Test dependencies -->

@@ -7,11 +7,11 @@
     <parent>
         <groupId>io.github.hunghhdev</groupId>
         <artifactId>pgcache</artifactId>
-        <version>1.5.0</version>
+        <version>1.5.1</version>
     </parent>
 
     <artifactId>pgcache-spring</artifactId>
-    <version>1.5.0</version>
+    <version>1.5.1</version>
     <name>PgCache Spring Integration</name>
     <description>Spring Framework integration for PgCache</description>
 
@@ -23,24 +23,28 @@
             <version>${project.version}</version>
         </dependency>
 
-        <!-- Spring Framework -->
+        <!-- Spring Framework - provided by user's Spring Boot project -->
         <dependency>
             <groupId>org.springframework</groupId>
             <artifactId>spring-context</artifactId>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.springframework</groupId>
             <artifactId>spring-context-support</artifactId>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.springframework</groupId>
             <artifactId>spring-jdbc</artifactId>
+            <scope>provided</scope>
         </dependency>
 
-        <!-- Spring Boot Auto-configuration -->
+        <!-- Spring Boot Auto-configuration - provided by user's Spring Boot project -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-autoconfigure</artifactId>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -48,29 +52,33 @@
             <optional>true</optional>
         </dependency>
 
-        <!-- Spring Boot Actuator (optional) -->
+        <!-- Spring Boot Actuator (optional) - provided by user if needed -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-actuator</artifactId>
+            <scope>provided</scope>
             <optional>true</optional>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-actuator-autoconfigure</artifactId>
+            <scope>provided</scope>
             <optional>true</optional>
         </dependency>
 
-        <!-- Micrometer Metrics (optional) -->
+        <!-- Micrometer Metrics (optional) - provided by user if needed -->
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-core</artifactId>
+            <scope>provided</scope>
             <optional>true</optional>
         </dependency>
 
-        <!-- Logging -->
+        <!-- Logging - provided by user's framework -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
+            <scope>provided</scope>
         </dependency>
 
         <!-- Test dependencies -->
