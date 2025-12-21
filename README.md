@@ -1,7 +1,7 @@
 # PgCache
 
 [![Java](https://img.shields.io/badge/Java-11%2B-blue.svg)](https://www.oracle.com/java/)
-[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.5.0-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache)
+[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.5.3-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 **A simple caching library that uses your existing PostgreSQL as cache backend.**
@@ -57,21 +57,21 @@ Perfect for small-to-medium applications that want caching without the complexit
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-core</artifactId>
-  <version>1.5.0</version>
+  <version>1.5.3</version>
 </dependency>
 
 <!-- Spring Boot integration -->
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-spring</artifactId>
-  <version>1.5.0</version>
+  <version>1.5.3</version>
 </dependency>
 
 <!-- Quarkus integration -->
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-quarkus</artifactId>
-  <version>1.5.0</version>
+  <version>1.5.3</version>
 </dependency>
 ```
 
@@ -121,7 +121,7 @@ pgcache:
       ttl-policy: ABSOLUTE             # Fixed expiration
 ```
 
-### Quarkus Usage (v1.5.0)
+### Quarkus Usage (v1.5.3)
 
 ```java
 @ApplicationScoped
@@ -295,7 +295,7 @@ CREATE UNLOGGED TABLE pgcache_store (
 
 ## Migration
 
-### From 1.4.x to 1.5.0
+### From 1.4.x to 1.5.3
 
 No database changes required. Just update the dependency version.
 
