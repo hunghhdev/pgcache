@@ -13,6 +13,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -98,7 +99,8 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         this.autoCreateTable = autoCreateTable;
         this.enableBackgroundCleanup = false;
         this.cleanupIntervalMinutes = 5;
-        this.allowNullValues = false; // Default to false for backward compatibility
+        this.allowNullValues = false;
+        this.eventListeners = new ArrayList<>();
 
         if (autoCreateTable) {
             initializeTable();
@@ -228,7 +230,8 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
             stmt.executeUpdate();
             putCount.incrementAndGet();
-            invalidateSizeCache(); // Invalidate size cache on modification
+            invalidateSizeCache();
+            fireOnPut(key, value);
         } catch (Exception e) {
             throw new PgCacheException("Failed to put value in cache", e);
         }
@@ -282,7 +285,8 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
             stmt.executeUpdate();
             putCount.incrementAndGet();
-            invalidateSizeCache(); // Invalidate size cache on modification
+            invalidateSizeCache();
+            fireOnPut(key, value);
         } catch (Exception e) {
             throw new PgCacheException("Failed to put value in cache", e);
         }
@@ -303,7 +307,8 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             int deleted = stmt.executeUpdate();
             if (deleted > 0) {
                 evictionCount.incrementAndGet();
-                invalidateSizeCache(); // Invalidate size cache on modification
+                invalidateSizeCache();
+                fireOnEvict(key);
             }
         } catch (SQLException e) {
             throw new PgCacheException("Failed to evict key from cache", e);
@@ -321,16 +326,46 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             if (deleted > 0) {
                 evictionCount.addAndGet(deleted);
             }
-            invalidateSizeCache(); // Invalidate size cache on modification
+            invalidateSizeCache();
+            fireOnClear();
         } catch (SQLException e) {
             throw new PgCacheException("Failed to clear cache", e);
         }
     }
 
-    // Helper method to invalidate size cache
     void invalidateSizeCache() {
         cachedSize = -1;
         lastSizeUpdate = Instant.MIN;
+    }
+
+    private void fireOnPut(String key, Object value) {
+        for (CacheEventListener listener : eventListeners) {
+            try {
+                listener.onPut(key, value);
+            } catch (Exception e) {
+                logger.warn("CacheEventListener.onPut failed for key '{}': {}", key, e.getMessage());
+            }
+        }
+    }
+
+    private void fireOnEvict(String key) {
+        for (CacheEventListener listener : eventListeners) {
+            try {
+                listener.onEvict(key);
+            } catch (Exception e) {
+                logger.warn("CacheEventListener.onEvict failed for key '{}': {}", key, e.getMessage());
+            }
+        }
+    }
+
+    private void fireOnClear() {
+        for (CacheEventListener listener : eventListeners) {
+            try {
+                listener.onClear();
+            } catch (Exception e) {
+                logger.warn("CacheEventListener.onClear failed: {}", e.getMessage());
+            }
+        }
     }
 
     // Cache for size() method to avoid expensive full table scans
@@ -340,15 +375,12 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     @Override
     public int size() {
-        // Use cached value if still valid
         if (cachedSize >= 0 && 
             Duration.between(lastSizeUpdate, Instant.now()).compareTo(SIZE_CACHE_DURATION) < 0) {
             logger.trace("Returning cached size: {}", cachedSize);
             return cachedSize;
         }
         
-        // Count all non-expired entries (entries with NULL TTL are considered permanent)
-        // Handles both ABSOLUTE and SLIDING TTL policies correctly
         String sql = "SELECT COUNT(*) FROM " + TABLE_NAME +
                      " WHERE ttl_seconds IS NULL" +
                      " OR (ttl_policy = 'ABSOLUTE' AND (updated_at + (ttl_seconds * interval '1 second')) > now())" +
@@ -369,6 +401,32 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         } catch (SQLException e) {
             logger.error("Failed to get cache size", e);
             throw new PgCacheException("Failed to get cache size", e);
+        }
+    }
+
+    @Override
+    public boolean containsKey(String key) {
+        if (key == null || key.isEmpty()) {
+            throw new PgCacheException("Cache key cannot be null or empty");
+        }
+
+        String sql = "SELECT 1 FROM " + TABLE_NAME +
+                     " WHERE key = ? AND (" +
+                     "  ttl_seconds IS NULL" +
+                     "  OR (ttl_policy = 'ABSOLUTE' AND (updated_at + (ttl_seconds * interval '1 second')) > now())" +
+                     "  OR (ttl_policy = 'SLIDING' AND (last_accessed + (ttl_seconds * interval '1 second')) > now())" +
+                     ") LIMIT 1";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, key);
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                return rs.next();
+            }
+        } catch (SQLException e) {
+            throw new PgCacheException("Failed to check if key exists in cache", e);
         }
     }
 
@@ -442,6 +500,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         private boolean enableBackgroundCleanup = false;
         private long cleanupIntervalMinutes = 5;
         private boolean allowNullValues = false;
+        private List<CacheEventListener> eventListeners = new ArrayList<>();
 
         private Builder() {
             this.objectMapper = new ObjectMapper();
@@ -514,6 +573,13 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             return this;
         }
 
+        public Builder addEventListener(CacheEventListener listener) {
+            if (listener != null) {
+                this.eventListeners.add(listener);
+            }
+            return this;
+        }
+
         /**
          * Builds a new PgCacheStore instance.
          *
@@ -528,21 +594,23 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 objectMapper = new ObjectMapper();
             }
             return new PgCacheStore(dataSource, objectMapper, autoCreateTable, 
-                                  enableBackgroundCleanup, cleanupIntervalMinutes, allowNullValues);
+                                  enableBackgroundCleanup, cleanupIntervalMinutes, allowNullValues,
+                                  eventListeners);
         }
     }
 
-    /**
-     * Private constructor used by the Builder.
-     */
+    private final List<CacheEventListener> eventListeners;
+
     private PgCacheStore(DataSource dataSource, ObjectMapper objectMapper, boolean autoCreateTable, 
-                         boolean enableBackgroundCleanup, long cleanupIntervalMinutes, boolean allowNullValues) {
+                         boolean enableBackgroundCleanup, long cleanupIntervalMinutes, boolean allowNullValues,
+                         List<CacheEventListener> eventListeners) {
         this.dataSource = dataSource;
         this.objectMapper = objectMapper;
         this.autoCreateTable = autoCreateTable;
         this.enableBackgroundCleanup = enableBackgroundCleanup;
         this.cleanupIntervalMinutes = cleanupIntervalMinutes;
         this.allowNullValues = allowNullValues;
+        this.eventListeners = eventListeners != null ? new ArrayList<>(eventListeners) : new ArrayList<>();
 
         if (autoCreateTable) {
             initializeTable();
@@ -1294,5 +1362,64 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         putCount.set(0);
         evictionCount.set(0);
         logger.debug("Cache statistics reset");
+    }
+
+    // ==================== Key Operations (v1.6.0) ====================
+
+    @Override
+    public Collection<String> getKeys(String pattern) {
+        if (pattern == null || pattern.isEmpty()) {
+            throw new PgCacheException("Pattern cannot be null or empty");
+        }
+
+        String sql = "SELECT key FROM " + TABLE_NAME +
+                     " WHERE key LIKE ? AND (" +
+                     "  ttl_seconds IS NULL" +
+                     "  OR (ttl_policy = 'ABSOLUTE' AND (updated_at + (ttl_seconds * interval '1 second')) > now())" +
+                     "  OR (ttl_policy = 'SLIDING' AND (last_accessed + (ttl_seconds * interval '1 second')) > now())" +
+                     ")";
+
+        List<String> keys = new ArrayList<>();
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, pattern);
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    keys.add(rs.getString("key"));
+                }
+            }
+            return keys;
+        } catch (SQLException e) {
+            throw new PgCacheException("Failed to get keys by pattern: " + pattern, e);
+        }
+    }
+
+    @Override
+    public Collection<String> getAllKeys() {
+        return getKeys("%");
+    }
+
+    // ==================== Async Operations (v1.6.0) ====================
+
+    @Override
+    public <T> CompletableFuture<Optional<T>> getAsync(String key, Class<T> clazz) {
+        return CompletableFuture.supplyAsync(() -> get(key, clazz));
+    }
+
+    @Override
+    public <T> CompletableFuture<Void> putAsync(String key, T value, Duration ttl) {
+        return CompletableFuture.runAsync(() -> put(key, value, ttl));
+    }
+
+    @Override
+    public <T> CompletableFuture<Void> putAsync(String key, T value, Duration ttl, TTLPolicy policy) {
+        return CompletableFuture.runAsync(() -> put(key, value, ttl, policy));
+    }
+
+    @Override
+    public CompletableFuture<Void> evictAsync(String key) {
+        return CompletableFuture.runAsync(() -> evict(key));
     }
 }

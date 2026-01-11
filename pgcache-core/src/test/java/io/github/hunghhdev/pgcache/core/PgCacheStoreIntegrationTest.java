@@ -10,6 +10,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -397,5 +398,51 @@ class PgCacheStoreIntegrationTest {
         public void setAge(int age) {
             this.age = age;
         }
+    }
+
+    @Test
+    void testContainsKey_Integration() {
+        // Arrange
+        String key = "exists-" + UUID.randomUUID();
+        cacheStore.put(key, new TestUser("Exists", 1), Duration.ofMinutes(1));
+
+        // Act & Assert
+        assertTrue(cacheStore.containsKey(key));
+        assertFalse(cacheStore.containsKey("non-existent"));
+    }
+
+    @Test
+    void testGetKeys_Integration() {
+        // Arrange
+        String prefix = "pattern-" + UUID.randomUUID();
+        cacheStore.put(prefix + ":1", new TestUser("U1", 1), Duration.ofMinutes(1));
+        cacheStore.put(prefix + ":2", new TestUser("U2", 2), Duration.ofMinutes(1));
+        cacheStore.put("other:1", new TestUser("O1", 1), Duration.ofMinutes(1));
+
+        // Act
+        Collection<String> keys = cacheStore.getKeys(prefix + ":%");
+
+        // Assert
+        assertEquals(2, keys.size());
+        assertTrue(keys.contains(prefix + ":1"));
+        assertTrue(keys.contains(prefix + ":2"));
+    }
+
+    @Test
+    void testAsyncOperations_Integration() throws Exception {
+        // Arrange
+        String key = "async-" + UUID.randomUUID();
+        TestUser user = new TestUser("Async", 1);
+
+        // Act - Put Async
+        cacheStore.putAsync(key, user, Duration.ofMinutes(1)).get(5, java.util.concurrent.TimeUnit.SECONDS);
+
+        // Assert
+        assertTrue(cacheStore.containsKey(key));
+
+        // Act - Get Async
+        Optional<TestUser> result = cacheStore.getAsync(key, TestUser.class).get(5, java.util.concurrent.TimeUnit.SECONDS);
+        assertTrue(result.isPresent());
+        assertEquals("Async", result.get().getName());
     }
 }

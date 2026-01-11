@@ -18,8 +18,13 @@ import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.Optional;
 
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -292,5 +297,94 @@ class PgCacheStoreTest {
         public void setValue(int value) {
             this.value = value;
         }
+    }
+
+    // ==================== v1.6.0 Feature Tests ====================
+
+    @Test
+    void testContainsKey() throws SQLException {
+        // Arrange
+        String key = "existing-key";
+        when(connection.prepareStatement(argThat(sql -> sql.contains("SELECT 1 FROM")))).thenReturn(preparedStatement);
+        when(preparedStatement.executeQuery()).thenReturn(resultSet);
+        when(resultSet.next()).thenReturn(true);
+
+        // Act
+        boolean exists = cacheStore.containsKey(key);
+
+        // Assert
+        assertTrue(exists);
+        verify(preparedStatement).setString(1, key);
+    }
+
+    @Test
+    void testGetKeys() throws SQLException {
+        // Arrange
+        String pattern = "user:%";
+        when(connection.prepareStatement(argThat(sql -> sql.contains("SELECT key FROM")))).thenReturn(preparedStatement);
+        when(preparedStatement.executeQuery()).thenReturn(resultSet);
+        when(resultSet.next()).thenReturn(true, true, false);
+        when(resultSet.getString("key")).thenReturn("user:1", "user:2");
+
+        // Act
+        Collection<String> keys = cacheStore.getKeys(pattern);
+
+        // Assert
+        assertEquals(2, keys.size());
+        assertTrue(keys.contains("user:1"));
+        assertTrue(keys.contains("user:2"));
+    }
+
+    @Test
+    void testAsyncGet() throws Exception {
+        // Arrange
+        String key = "async-key";
+        TestObject expected = new TestObject("Async", 1);
+        String json = realObjectMapper.writeValueAsString(expected);
+
+        when(preparedStatement.executeQuery()).thenReturn(resultSet);
+        when(resultSet.next()).thenReturn(true);
+        when(resultSet.getString("value")).thenReturn(json);
+        when(resultSet.getTimestamp("updated_at")).thenReturn(Timestamp.from(Instant.now()));
+        when(resultSet.getObject("ttl_seconds", Integer.class)).thenReturn(60);
+
+        // Act
+        CompletableFuture<Optional<TestObject>> future = cacheStore.getAsync(key, TestObject.class);
+        Optional<TestObject> result = future.get(1, TimeUnit.SECONDS);
+
+        // Assert
+        assertTrue(result.isPresent());
+        assertEquals("Async", result.get().getName());
+    }
+
+    @Test
+    void testEventListener() throws SQLException {
+        // Arrange
+        CacheEventListener listener = mock(CacheEventListener.class);
+        PgCacheStore storeWithListener = PgCacheStore.builder()
+                .dataSource(dataSource)
+                .objectMapper(realObjectMapper)
+                .autoCreateTable(false)
+                .addEventListener(listener)
+                .build();
+
+        String key = "event-key";
+        TestObject value = new TestObject("Event", 1);
+        
+        // Mock connection for the new store instance
+        // Note: In a real unit test this is tricky because builder creates new instance.
+        // But here we reuse the mocked dataSource which returns mocked connection.
+        // The issue is connection.prepareStatement() needs to return a valid statement for the PUT.
+        
+        // We need to ensure when storeWithListener calls put, it gets the mocked statement
+        // The existing mock setup in setUp() might handle this if it's broad enough
+        // But setUp() mocks calls on the 'connection' mock object. 
+        // storeWithListener will call dataSource.getConnection().
+        
+        // Act
+        storeWithListener.put(key, value, Duration.ofMinutes(1));
+
+        // Assert
+        verify(listener).onPut(eq(key), any(TestObject.class));
     }
 }

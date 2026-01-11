@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Main client for interacting with the cache using a PgCacheStore backend.
@@ -96,6 +97,16 @@ public interface PgCacheClient {
     void clear();
     int size();
 
+    /**
+     * Checks if the cache contains a non-expired entry for the given key.
+     * This is more efficient than get() as it doesn't deserialize the value.
+     * 
+     * @param key the cache key to check
+     * @return true if the key exists and is not expired, false otherwise
+     * @since 1.6.0
+     */
+    boolean containsKey(String key);
+
     // ==================== Batch Operations (v1.3.0) ====================
 
     /**
@@ -174,4 +185,44 @@ public interface PgCacheClient {
      * @since 1.3.0
      */
     int evictByPattern(String pattern);
+
+    /**
+     * Gets all non-expired cache keys matching the given SQL LIKE pattern.
+     * Warning: Can be expensive on large datasets.
+     * @since 1.6.0
+     */
+    Collection<String> getKeys(String pattern);
+
+    /**
+     * Gets all non-expired cache keys.
+     * Warning: Can be expensive on large datasets.
+     * @since 1.6.0
+     */
+    Collection<String> getAllKeys();
+
+    // ==================== Async Operations (v1.6.0) ====================
+
+    /**
+     * Asynchronously gets a value from the cache.
+     * @since 1.6.0
+     */
+    <T> CompletableFuture<Optional<T>> getAsync(String key, Class<T> clazz);
+
+    /**
+     * Asynchronously puts a value in the cache with TTL.
+     * @since 1.6.0
+     */
+    <T> CompletableFuture<Void> putAsync(String key, T value, Duration ttl);
+
+    /**
+     * Asynchronously puts a value in the cache with TTL and policy.
+     * @since 1.6.0
+     */
+    <T> CompletableFuture<Void> putAsync(String key, T value, Duration ttl, TTLPolicy policy);
+
+    /**
+     * Asynchronously evicts a key from the cache.
+     * @since 1.6.0
+     */
+    CompletableFuture<Void> evictAsync(String key);
 }
