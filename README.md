@@ -1,7 +1,7 @@
 # PgCache
 
 [![Java](https://img.shields.io/badge/Java-11%2B-blue.svg)](https://www.oracle.com/java/)
-[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.5.3-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache)
+[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.6.0-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 **A simple caching library that uses your existing PostgreSQL as cache backend.**
@@ -16,7 +16,7 @@ Perfect for small-to-medium applications that want caching without the complexit
 |----------|---------------------|--------------|
 | Small/Medium app | PostgreSQL + Redis | PostgreSQL only |
 | Infrastructure | 2 systems to maintain | 1 system |
-| Monthly cost | $50-200+ for Redis | $0 extra |
+| Monthly cost | -200+ for Redis | /usr/bin/zsh extra |
 | Complexity | Connection pools, failover for both | Single database |
 
 ### Best For
@@ -36,8 +36,10 @@ Perfect for small-to-medium applications that want caching without the complexit
 ## Features
 
 - **Zero extra infrastructure** - Uses your existing PostgreSQL
-- **Spring Boot integration** - Works with `@Cacheable`, `@CacheEvict`, etc.
-- **Quarkus integration** - Works with `@CacheResult`, `@CacheInvalidate`, etc.
+- **Spring Boot integration** - Works with `@Cacheable`, `@CacheEvict`, auto-configuration
+- **Quarkus integration** - Works with `@CacheResult`, MicroProfile Health
+- **Async API** - Non-blocking operations (`getAsync`, `putAsync`)
+- **Event Listeners** - Monitor cache events (put, evict, clear)
 - **Sliding TTL** - Active entries stay cached longer (like Redis)
 - **Null value caching** - Properly cache null results
 - **Batch operations** - `getAll`, `putAll`, `evictAll` for efficiency
@@ -57,21 +59,21 @@ Perfect for small-to-medium applications that want caching without the complexit
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-core</artifactId>
-  <version>1.5.3</version>
+  <version>1.6.0</version>
 </dependency>
 
 <!-- Spring Boot integration -->
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-spring</artifactId>
-  <version>1.5.3</version>
+  <version>1.6.0</version>
 </dependency>
 
 <!-- Quarkus integration -->
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-quarkus</artifactId>
-  <version>1.5.3</version>
+  <version>1.6.0</version>
 </dependency>
 ```
 
@@ -121,7 +123,7 @@ pgcache:
       ttl-policy: ABSOLUTE             # Fixed expiration
 ```
 
-### Quarkus Usage (v1.5.3)
+### Quarkus Usage
 
 ```java
 @ApplicationScoped
@@ -130,10 +132,10 @@ public class UserService {
     @Inject
     PgQuarkusCacheManager cacheManager;
 
-    public User getUser(Long id) {
+    public Uni<User> getUser(Long id) {
         PgQuarkusCache cache = cacheManager.getOrCreateCache("users");
-        return cache.get("user:" + id, key -> userRepository.findById(id))
-                   .await().indefinitely();
+        // Uses async API under the hood
+        return cache.getAsync("user:" + id, key -> userRepository.findById(id));
     }
 }
 ```
@@ -153,7 +155,7 @@ pgcache.caches.users.ttl=PT2H
 pgcache.caches.users.ttl-policy=SLIDING
 ```
 
-### Standalone Usage (without Spring/Quarkus)
+### Standalone Usage (Core)
 
 ```java
 PgCacheClient cache = PgCacheStore.builder()
@@ -163,15 +165,70 @@ PgCacheClient cache = PgCacheStore.builder()
 // Store with TTL
 cache.put("user:123", user, Duration.ofHours(1));
 
-// Store with sliding TTL (resets on access)
-cache.put("session:abc", session, Duration.ofMinutes(30), TTLPolicy.SLIDING);
-
 // Retrieve
 Optional<User> user = cache.get("user:123", User.class);
 
-// Evict
-cache.evict("user:123");
+// Async Operations (v1.6.0)
+cache.getAsync("user:123", User.class)
+     .thenAccept(opt -> System.out.println(opt.orElse(null)));
+
+// Key Check (v1.6.0) - Efficient existence check
+boolean exists = cache.containsKey("user:123");
+
+// Pattern Operations
+cache.getKeys("user:%"); // Get all user keys
+cache.evictByPattern("user:%"); // Evict all user keys
 ```
+
+### Event Listeners (v1.6.0)
+
+Monitor cache operations by registering listeners:
+
+```java
+PgCacheStore.builder()
+    .dataSource(dataSource)
+    .addEventListener(new CacheEventListener() {
+        @Override
+        public void onPut(String key, Object value) {
+            log.info("Cached: {}", key);
+        }
+        @Override
+        public void onEvict(String key) {
+            log.info("Evicted: {}", key);
+        }
+    })
+    .build();
+```
+
+In **Spring Boot**, simply define a bean implementing `CacheEventListener`:
+
+```java
+@Component
+public class MyCacheListener implements CacheEventListener {
+    // ... overrides
+}
+```
+
+### Quarkus Health Check (v1.6.0)
+
+Add cache health status to your Quarkus Health endpoint:
+
+```java
+@Liveness
+@ApplicationScoped
+public class CacheHealthCheck implements HealthCheck {
+    @Inject PgQuarkusHealthCheck pgCacheHealth;
+
+    @Override
+    public HealthCheckResponse call() {
+        return pgCacheHealth.check().isUp() 
+             ? HealthCheckResponse.up("pgcache") 
+             : HealthCheckResponse.down("pgcache");
+    }
+}
+```
+
+## Advanced Features
 
 ### Batch Operations (v1.3.0)
 
@@ -185,142 +242,72 @@ Map<String, User> users = cache.getAll(
 // Put multiple values
 Map<String, User> entries = Map.of(
     "user:1", user1,
-    "user:2", user2,
-    "user:3", user3
+    "user:2", user2
 );
 cache.putAll(entries, Duration.ofHours(1));
-
-// Evict multiple keys
-cache.evictAll(Arrays.asList("user:1", "user:2"));
-
-// Evict by pattern - remove all keys starting with "user:"
-cache.evictByPattern("user:%");
 ```
 
-### Cache Statistics (v1.3.0)
+### Cache Statistics
 
 ```java
 CacheStatistics stats = cache.getStatistics();
-
-System.out.println("Hits: " + stats.getHitCount());
-System.out.println("Misses: " + stats.getMissCount());
-System.out.println("Hit Rate: " + stats.getHitRate());  // 0.0 - 1.0
-System.out.println("Puts: " + stats.getPutCount());
-System.out.println("Evictions: " + stats.getEvictionCount());
-
-// Reset statistics
-cache.resetStatistics();
+System.out.println("Hit Rate: " + stats.getHitRate());
 ```
 
-### Micrometer Metrics (v1.4.0)
+### Micrometer Metrics
 
-When using `pgcache-spring` with Micrometer on the classpath, metrics are auto-configured:
-
-```yaml
-# application.yml - metrics available at /actuator/metrics
-management:
-  endpoints:
-    web:
-      exposure:
-        include: metrics,health
-```
-
-**Available metrics:**
-- `pgcache.gets` (counter, tagged: `result=hit|miss`, `cache=<name>`)
+When using `pgcache-spring` with Micrometer, metrics are auto-configured:
+- `pgcache.gets` (counter)
 - `pgcache.puts` (counter)
 - `pgcache.evictions` (counter)
 - `pgcache.size` (gauge)
-- `pgcache.hit.rate` (gauge, 0.0 - 1.0)
-
-**Manual binding** (without auto-configuration):
-```java
-MeterRegistry registry = ...;
-PgCache cache = (PgCache) cacheManager.getCache("myCache");
-PgCacheMetrics.monitor(cache, registry);
-```
+- `pgcache.hit.rate` (gauge)
 
 ## Sliding vs Absolute TTL
 
 ```java
 // Absolute TTL: expires at creation_time + TTL
 cache.put("key", value, Duration.ofHours(1));
-// Created at 10:00 → Expires at 11:00 (regardless of access)
 
 // Sliding TTL: expires at last_access_time + TTL
 cache.put("key", value, Duration.ofHours(1), TTLPolicy.SLIDING);
-// Created at 10:00, accessed at 10:30 → Expires at 11:30
-// Accessed again at 11:00 → Expires at 12:00
 ```
 
 ## Performance
 
-PgCache uses several optimizations:
-
-- **UNLOGGED tables** - No WAL overhead, faster writes
-- **GIN indexes** - Efficient JSONB querying
-- **Cached size()** - Avoids expensive COUNT queries
-- **Partial indexes** - Optimized TTL cleanup queries
-
-**Typical performance** (on modest hardware):
-- Read: ~1-5ms
-- Write: ~2-10ms
-- Suitable for: hundreds to low thousands of ops/sec
-
-For comparison: Redis typically offers sub-ms latency and millions of ops/sec. Choose based on your actual needs.
-
-## When to Use PgCache
-
-| Use PgCache | Use Redis/Memcached |
-|-------------|---------------------|
-| < 100k cache entries | > 1M cache entries |
-| Hundreds of ops/sec | Millions of ops/sec |
-| Cost-sensitive | Performance-critical |
-| Simple infrastructure | Already have Redis |
-| PostgreSQL already in stack | Need pub/sub, streams |
-
-## Database Schema
-
-PgCache automatically creates this table:
-
-```sql
-CREATE UNLOGGED TABLE pgcache_store (
-  key TEXT PRIMARY KEY,
-  value JSONB NOT NULL,
-  updated_at TIMESTAMP DEFAULT now(),
-  ttl_seconds INT,
-  ttl_policy VARCHAR(10) DEFAULT 'ABSOLUTE',
-  last_accessed TIMESTAMP DEFAULT now()
-);
-```
+PgCache uses **UNLOGGED tables** (no WAL overhead) and **JSONB** storage for performance.
+- **Read**: ~1-5ms
+- **Write**: ~2-10ms
+- **Throughput**: Hundreds to low thousands ops/sec
 
 ## Migration
 
-### From 1.4.x to 1.5.3
+### From 1.5.x to 1.6.0
 
-No database changes required. Just update the dependency version.
+No database changes required.
 
-New features:
-- Quarkus integration via `pgcache-quarkus` module
-- `PgQuarkusCache` and `PgQuarkusCacheManager` for Quarkus Cache SPI
+**New Features:**
+- **Async API**: `getAsync`, `putAsync` in `PgCacheClient`
+- **Key Operations**: `containsKey`, `getKeys(pattern)`
+- **Event Listeners**: `CacheEventListener` interface
+- **Quarkus**: `PgQuarkusCache` now uses non-blocking async internal API
+- **Spring**: Auto-detection of `CacheEventListener` beans
+
+### From 1.4.x to 1.5.x
+
+No database changes required. Added Quarkus integration.
 
 ### From 1.3.x to 1.4.0
 
-No database changes required. Just update the dependency version.
-
-New features:
-- Micrometer metrics integration (auto-configured when Micrometer is on classpath)
-- `PgCacheMetrics` class for manual metric binding
+No database changes required. Added Micrometer metrics.
 
 ### From 1.2.x to 1.3.0
 
-No database changes required. Just update the dependency version.
-
-New APIs available:
-- `getAll()`, `putAll()`, `evictAll()` - Batch operations
-- `getStatistics()`, `resetStatistics()` - Cache statistics
-- `evictByPattern()` - Pattern-based eviction
+No database changes required. Added Batch operations and Statistics.
 
 ### From 1.0.x/1.1.x to 1.2.x
+
+Schema update required for Sliding TTL:
 
 ```sql
 ALTER TABLE pgcache_store
@@ -331,12 +318,6 @@ CREATE INDEX IF NOT EXISTS pgcache_store_sliding_ttl_idx
   ON pgcache_store (ttl_policy, last_accessed)
   WHERE ttl_policy = 'SLIDING';
 ```
-
-## Links
-
-- [Changelog](CHANGELOG.md) - Version history
-- [GitHub Issues](https://github.com/hunghhdev/pgcache/issues) - Bug reports & features
-- [Maven Central](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache-core)
 
 ## License
 
