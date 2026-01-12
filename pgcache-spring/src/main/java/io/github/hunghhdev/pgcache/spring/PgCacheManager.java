@@ -1,5 +1,6 @@
 package io.github.hunghhdev.pgcache.spring;
 
+import io.github.hunghhdev.pgcache.core.CacheEventListener;
 import io.github.hunghhdev.pgcache.core.PgCacheStore;
 import io.github.hunghhdev.pgcache.core.TTLPolicy;
 import org.slf4j.Logger;
@@ -10,6 +11,8 @@ import org.springframework.cache.CacheManager;
 import javax.sql.DataSource;
 import java.time.Duration;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -25,6 +28,7 @@ public class PgCacheManager implements CacheManager {
     private final PgCacheConfiguration defaultConfiguration;
     private final ConcurrentMap<String, Cache> cacheMap = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, PgCacheConfiguration> cacheConfigurations = new ConcurrentHashMap<>();
+    private final List<CacheEventListener> eventListeners;
     
     /**
      * Create a new PgCacheManager with default configuration.
@@ -33,8 +37,20 @@ public class PgCacheManager implements CacheManager {
      * @param defaultConfiguration default configuration for caches
      */
     public PgCacheManager(DataSource dataSource, PgCacheConfiguration defaultConfiguration) {
+        this(dataSource, defaultConfiguration, Collections.emptyList());
+    }
+
+    /**
+     * Create a new PgCacheManager with default configuration and listeners.
+     *
+     * @param dataSource the DataSource for database connections
+     * @param defaultConfiguration default configuration for caches
+     * @param eventListeners list of cache event listeners
+     */
+    public PgCacheManager(DataSource dataSource, PgCacheConfiguration defaultConfiguration, List<CacheEventListener> eventListeners) {
         this.dataSource = dataSource;
         this.defaultConfiguration = defaultConfiguration;
+        this.eventListeners = eventListeners != null ? eventListeners : Collections.emptyList();
     }
     
     @Override
@@ -163,6 +179,9 @@ public class PgCacheManager implements CacheManager {
                 builder.enableBackgroundCleanup(true)
                        .cleanupIntervalMinutes(config.getBackgroundCleanupInterval().toMinutes());
             }
+
+            // Register listeners
+            eventListeners.forEach(builder::addEventListener);
             
             PgCacheStore cacheStore = builder.build();
             

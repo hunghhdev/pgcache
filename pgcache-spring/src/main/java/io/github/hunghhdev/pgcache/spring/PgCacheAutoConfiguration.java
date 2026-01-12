@@ -1,7 +1,9 @@
 package io.github.hunghhdev.pgcache.spring;
 
+import io.github.hunghhdev.pgcache.core.CacheEventListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -11,6 +13,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import javax.sql.DataSource;
+import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Auto-configuration for PgCache Spring integration.
@@ -29,11 +33,17 @@ public class PgCacheAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(name = "pgCacheManager")
-    public PgCacheManager pgCacheManager(DataSource dataSource, PgCacheProperties properties) {
+    public PgCacheManager pgCacheManager(DataSource dataSource, PgCacheProperties properties,
+                                         ObjectProvider<CacheEventListener> listenersProvider) {
         logger.info("Auto-configuring PgCacheManager with default TTL: {}, table: {}, background cleanup: {}", 
                    properties.getDefaultTtl(), properties.getTableName(), properties.getBackgroundCleanup().isEnabled());
         
-        PgCacheManager cacheManager = new PgCacheManager(dataSource, properties.toDefaultConfiguration());
+        List<CacheEventListener> listeners = listenersProvider.stream().collect(Collectors.toList());
+        if (!listeners.isEmpty()) {
+            logger.info("Registering {} cache event listeners", listeners.size());
+        }
+
+        PgCacheManager cacheManager = new PgCacheManager(dataSource, properties.toDefaultConfiguration(), listeners);
         
         // Configure individual caches
         properties.getCaches().forEach((cacheName, cacheConfig) -> {

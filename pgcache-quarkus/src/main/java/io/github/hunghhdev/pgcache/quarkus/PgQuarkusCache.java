@@ -5,6 +5,7 @@ import io.github.hunghhdev.pgcache.core.PgCacheStore;
 import io.github.hunghhdev.pgcache.core.TTLPolicy;
 import io.quarkus.cache.Cache;
 import io.smallrye.mutiny.Uni;
+import io.smallrye.mutiny.infrastructure.Infrastructure;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,33 +52,32 @@ public class PgQuarkusCache implements Cache {
     @Override
     @SuppressWarnings("unchecked")
     public <K, V> Uni<V> get(K key, Function<K, V> valueLoader) {
-        return Uni.createFrom().item(() -> {
-            String keyStr = toKeyString(key);
+        String keyStr = toKeyString(key);
 
-            // Try to get from cache first
-            Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, true);
-            if (optionalValue.isPresent()) {
-                Object value = optionalValue.get();
-                if (value instanceof NullValueMarker) {
-                    return null;
+        // Try to get from cache asynchronously (Lazy creation)
+        return Uni.createFrom().completionStage(() -> cacheStore.getAsync(keyStr, Object.class))
+            .flatMap(optionalValue -> {
+                if (optionalValue.isPresent()) {
+                    Object value = optionalValue.get();
+                    if (value instanceof NullValueMarker) {
+                        return Uni.createFrom().nullItem();
+                    }
+                    return Uni.createFrom().item((V) value);
                 }
-                return (V) value;
-            }
 
-            // Load value using the valueLoader
-            V value = valueLoader.apply(key);
-
-            // Store in cache
-            if (value != null || allowNullValues) {
-                if (defaultTtl != null) {
-                    cacheStore.put(keyStr, value, defaultTtl, ttlPolicy);
-                } else {
-                    cacheStore.put(keyStr, value);
-                }
-            }
-
-            return value;
-        });
+                // Cache miss - load value
+                // Run valueLoader on worker thread to avoid blocking the IO thread
+                return Uni.createFrom().item(() -> valueLoader.apply(key))
+                    .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
+                    .call(value -> {
+                        if (value != null || allowNullValues) {
+                            return Uni.createFrom().completionStage(() -> 
+                                cacheStore.putAsync(keyStr, value, defaultTtl, ttlPolicy)
+                            );
+                        }
+                        return Uni.createFrom().voidItem();
+                    });
+            });
     }
 
     @Override
@@ -85,60 +85,60 @@ public class PgQuarkusCache implements Cache {
     public <K, V> Uni<V> getAsync(K key, Function<K, Uni<V>> valueLoader) {
         String keyStr = toKeyString(key);
 
-        // Try to get from cache first
-        Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, true);
-        if (optionalValue.isPresent()) {
-            Object value = optionalValue.get();
-            if (value instanceof NullValueMarker) {
-                return Uni.createFrom().nullItem();
-            }
-            return Uni.createFrom().item((V) value);
-        }
-
-        // Load value asynchronously using the valueLoader
-        return valueLoader.apply(key)
-            .onItem().invoke(value -> {
-                if (value != null || allowNullValues) {
-                    if (defaultTtl != null) {
-                        cacheStore.put(keyStr, value, defaultTtl, ttlPolicy);
-                    } else {
-                        cacheStore.put(keyStr, value);
+        return Uni.createFrom().completionStage(() -> cacheStore.getAsync(keyStr, Object.class))
+            .flatMap(optionalValue -> {
+                if (optionalValue.isPresent()) {
+                    Object value = optionalValue.get();
+                    if (value instanceof NullValueMarker) {
+                        return Uni.createFrom().nullItem();
                     }
+                    return Uni.createFrom().item((V) value);
                 }
+
+                // Cache miss - load value asynchronously
+                return valueLoader.apply(key)
+                    .call(value -> {
+                        if (value != null || allowNullValues) {
+                            return Uni.createFrom().completionStage(() -> 
+                                cacheStore.putAsync(keyStr, value, defaultTtl, ttlPolicy)
+                            );
+                        }
+                        return Uni.createFrom().voidItem();
+                    });
             });
     }
 
     @Override
     public Uni<Void> invalidate(Object key) {
-        return Uni.createFrom().item(() -> {
-            if (key != null) {
-                String keyStr = toKeyString(key);
-                cacheStore.evict(keyStr);
-                logger.debug("Invalidated key '{}' from cache '{}'", key, name);
-            }
-            return null;
-        });
+        if (key == null) {
+            return Uni.createFrom().voidItem();
+        }
+        String keyStr = toKeyString(key);
+        return Uni.createFrom().completionStage(() -> cacheStore.evictAsync(keyStr))
+                .invoke(() -> logger.debug("Invalidated key '{}' from cache '{}'", key, name));
     }
 
     @Override
     public Uni<Void> invalidateAll() {
+        // Clear is still sync in core, so run on worker pool
         return Uni.createFrom().item(() -> {
             cacheStore.clear();
             logger.debug("Invalidated all entries from cache '{}'", name);
-            return null;
-        });
+            return (Void) null;
+        })
+        .runSubscriptionOn(Infrastructure.getDefaultWorkerPool());
     }
 
     @Override
     public Uni<Void> invalidateIf(Predicate<Object> predicate) {
+        // Complex invalidation, run on worker pool
         return Uni.createFrom().item(() -> {
-            // For pattern-based eviction, we use evictByPattern with cache name prefix
-            // Since we can't iterate keys easily, we use a pattern that matches all keys in this cache
             String pattern = name + ":%";
             cacheStore.evictByPattern(pattern);
             logger.debug("Invalidated entries by predicate from cache '{}'", name);
-            return null;
-        });
+            return (Void) null;
+        })
+        .runSubscriptionOn(Infrastructure.getDefaultWorkerPool());
     }
 
     @Override
@@ -150,30 +150,18 @@ public class PgQuarkusCache implements Cache {
         throw new IllegalArgumentException("Cannot cast " + this.getClass().getName() + " to " + type.getName());
     }
 
-    /**
-     * Get the underlying cache store.
-     */
     public PgCacheStore getCacheStore() {
         return cacheStore;
     }
 
-    /**
-     * Get the cache size (number of non-expired entries).
-     */
     public long size() {
         return cacheStore.size();
     }
 
-    /**
-     * Manually trigger cleanup of expired entries.
-     */
     public void cleanupExpired() {
         cacheStore.cleanupExpired();
     }
 
-    /**
-     * Convert key to string representation for storage.
-     */
     private String toKeyString(Object key) {
         return name + ":" + key.toString();
     }
