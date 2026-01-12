@@ -11,6 +11,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Duration;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -46,51 +47,57 @@ class PgQuarkusCacheTest {
     void get_cacheHit_returnsValueFromCache() {
         String key = "key1";
         String expectedValue = "cached-value";
-        when(cacheStore.get(eq("test:" + key), eq(Object.class), eq(true)))
-            .thenReturn(Optional.of(expectedValue));
+        when(cacheStore.getAsync(eq("test:" + key), eq(Object.class)))
+            .thenReturn(CompletableFuture.completedFuture(Optional.of(expectedValue)));
 
         Uni<String> result = cache.get(key, k -> "loaded-value");
         String value = result.await().indefinitely();
 
         assertEquals(expectedValue, value);
-        verify(cacheStore, never()).put(anyString(), any(), any(Duration.class), any(TTLPolicy.class));
+        verify(cacheStore, never()).putAsync(anyString(), any(), any(Duration.class), any(TTLPolicy.class));
     }
 
     @Test
     void get_cacheMiss_loadsAndCachesValue() {
         String key = "key1";
         String loadedValue = "loaded-value";
-        when(cacheStore.get(eq("test:" + key), eq(Object.class), eq(true)))
-            .thenReturn(Optional.empty());
+        when(cacheStore.getAsync(eq("test:" + key), eq(Object.class)))
+            .thenReturn(CompletableFuture.completedFuture(Optional.empty()));
+        when(cacheStore.putAsync(anyString(), any(), any(Duration.class), any(TTLPolicy.class)))
+            .thenReturn(CompletableFuture.completedFuture(null));
 
         Uni<String> result = cache.get(key, k -> loadedValue);
         String value = result.await().indefinitely();
 
         assertEquals(loadedValue, value);
-        verify(cacheStore).put(eq("test:" + key), eq(loadedValue), eq(Duration.ofHours(1)), eq(TTLPolicy.ABSOLUTE));
+        verify(cacheStore).putAsync(eq("test:" + key), eq(loadedValue), eq(Duration.ofHours(1)), eq(TTLPolicy.ABSOLUTE));
     }
 
     @Test
     void get_cacheMiss_nullValueAllowed_cachesNull() {
         String key = "key1";
-        when(cacheStore.get(eq("test:" + key), eq(Object.class), eq(true)))
-            .thenReturn(Optional.empty());
+        when(cacheStore.getAsync(eq("test:" + key), eq(Object.class)))
+            .thenReturn(CompletableFuture.completedFuture(Optional.empty()));
+        when(cacheStore.putAsync(anyString(), any(), any(Duration.class), any(TTLPolicy.class)))
+            .thenReturn(CompletableFuture.completedFuture(null));
 
         Uni<String> result = cache.get(key, k -> null);
         String value = result.await().indefinitely();
 
         assertNull(value);
-        verify(cacheStore).put(eq("test:" + key), isNull(), eq(Duration.ofHours(1)), eq(TTLPolicy.ABSOLUTE));
+        verify(cacheStore).putAsync(eq("test:" + key), isNull(), eq(Duration.ofHours(1)), eq(TTLPolicy.ABSOLUTE));
     }
 
     @Test
     void invalidate_evictsFromCache() {
         String key = "key1";
+        when(cacheStore.evictAsync(eq("test:" + key)))
+            .thenReturn(CompletableFuture.completedFuture(null));
 
         Uni<Void> result = cache.invalidate(key);
         result.await().indefinitely();
 
-        verify(cacheStore).evict("test:" + key);
+        verify(cacheStore).evictAsync("test:" + key);
     }
 
     @Test
