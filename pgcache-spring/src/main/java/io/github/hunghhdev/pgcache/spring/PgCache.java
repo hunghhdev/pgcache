@@ -90,20 +90,17 @@ public class PgCache implements Cache {
 
         try {
             String keyStr = toKeyString(key);
-            // Always refresh TTL - let the core decide based on the entry's TTL policy
-            Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, true);
+            Optional<T> optionalValue = cacheStore.get(keyStr, type, true);
             if (!optionalValue.isPresent()) {
                 return null;
             }
 
-            Object value = optionalValue.get();
-            // Check for null marker - indicates cached null value
+            T value = optionalValue.get();
             if (value instanceof NullValueMarker) {
                 return null;
             }
 
-            // Re-fetch with proper type if not null marker
-            return cacheStore.get(keyStr, type, false).orElse(null);
+            return value;
         } catch (Exception e) {
             logger.warn("Failed to get value from cache '{}' for key '{}' with type {}: {}",
                        name, key, type.getSimpleName(), e.getMessage());
@@ -314,19 +311,17 @@ public class PgCache implements Cache {
 
         try {
             String keyStr = toKeyString(key);
-            Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, refreshTTL);
+            Optional<T> optionalValue = cacheStore.get(keyStr, type, refreshTTL);
             if (!optionalValue.isPresent()) {
                 return null;
             }
 
-            Object value = optionalValue.get();
-            // Check for null marker - indicates cached null value
+            T value = optionalValue.get();
             if (value instanceof NullValueMarker) {
                 return null;
             }
 
-            // Re-fetch with proper type if not null marker
-            return cacheStore.get(keyStr, type, false).orElse(null);
+            return value;
         } catch (Exception e) {
             logger.warn("Failed to get value from cache '{}' for key '{}' with type {} and refreshTTL={}: {}",
                        name, key, type.getSimpleName(), refreshTTL, e.getMessage());

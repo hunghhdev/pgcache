@@ -14,7 +14,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -66,12 +68,32 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         "ON " + TABLE_NAME + " (ttl_policy, last_accessed) " +
         "WHERE ttl_policy = 'SLIDING'";
 
+    /**
+     * SQL WHERE clause for checking non-expired entries.
+     * Handles: permanent entries (NULL ttl), ABSOLUTE TTL, and SLIDING TTL.
+     */
+    private static final String NOT_EXPIRED_WHERE_CLAUSE =
+        "(ttl_seconds IS NULL" +
+        " OR (ttl_policy = 'ABSOLUTE' AND (updated_at + (ttl_seconds * interval '1 second')) > now())" +
+        " OR (ttl_policy = 'SLIDING' AND (last_accessed + (ttl_seconds * interval '1 second')) > now()))";
+
+    /**
+     * SQL WHERE clause for checking expired entries (inverse of NOT_EXPIRED).
+     * Used for cleanup operations.
+     */
+    private static final String EXPIRED_WHERE_CLAUSE =
+        "(ttl_seconds IS NOT NULL AND (" +
+        "(ttl_policy = 'ABSOLUTE' AND (updated_at + (ttl_seconds * interval '1 second')) <= now()) " +
+        "OR (ttl_policy = 'SLIDING' AND (last_accessed + (ttl_seconds * interval '1 second')) <= now())))";
+
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
     private final boolean autoCreateTable;
     private final boolean enableBackgroundCleanup;
     private final long cleanupIntervalMinutes;
     private final boolean allowNullValues;
+    private final Executor asyncExecutor;
+    private final CacheEventDispatcher eventDispatcher;
     private volatile ScheduledExecutorService cleanupExecutor;
     
     // Thread-safe initialization flag using double-checked locking pattern
@@ -101,6 +123,8 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         this.cleanupIntervalMinutes = 5;
         this.allowNullValues = false;
         this.eventListeners = new ArrayList<>();
+        this.asyncExecutor = ForkJoinPool.commonPool();
+        this.eventDispatcher = new CacheEventDispatcher(this.eventListeners);
 
         if (autoCreateTable) {
             initializeTable();
@@ -339,33 +363,15 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     }
 
     private void fireOnPut(String key, Object value) {
-        for (CacheEventListener listener : eventListeners) {
-            try {
-                listener.onPut(key, value);
-            } catch (Exception e) {
-                logger.warn("CacheEventListener.onPut failed for key '{}': {}", key, e.getMessage());
-            }
-        }
+        eventDispatcher.fireOnPut(key, value);
     }
 
     private void fireOnEvict(String key) {
-        for (CacheEventListener listener : eventListeners) {
-            try {
-                listener.onEvict(key);
-            } catch (Exception e) {
-                logger.warn("CacheEventListener.onEvict failed for key '{}': {}", key, e.getMessage());
-            }
-        }
+        eventDispatcher.fireOnEvict(key);
     }
 
     private void fireOnClear() {
-        for (CacheEventListener listener : eventListeners) {
-            try {
-                listener.onClear();
-            } catch (Exception e) {
-                logger.warn("CacheEventListener.onClear failed: {}", e.getMessage());
-            }
-        }
+        eventDispatcher.fireOnClear();
     }
 
     // Cache for size() method to avoid expensive full table scans
@@ -381,10 +387,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             return cachedSize;
         }
         
-        String sql = "SELECT COUNT(*) FROM " + TABLE_NAME +
-                     " WHERE ttl_seconds IS NULL" +
-                     " OR (ttl_policy = 'ABSOLUTE' AND (updated_at + (ttl_seconds * interval '1 second')) > now())" +
-                     " OR (ttl_policy = 'SLIDING' AND (last_accessed + (ttl_seconds * interval '1 second')) > now())";
+        String sql = "SELECT COUNT(*) FROM " + TABLE_NAME + " WHERE " + NOT_EXPIRED_WHERE_CLAUSE;
 
         try (Connection conn = getValidatedConnection();
              Statement stmt = conn.createStatement();
@@ -411,11 +414,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
 
         String sql = "SELECT 1 FROM " + TABLE_NAME +
-                     " WHERE key = ? AND (" +
-                     "  ttl_seconds IS NULL" +
-                     "  OR (ttl_policy = 'ABSOLUTE' AND (updated_at + (ttl_seconds * interval '1 second')) > now())" +
-                     "  OR (ttl_policy = 'SLIDING' AND (last_accessed + (ttl_seconds * interval '1 second')) > now())" +
-                     ") LIMIT 1";
+                     " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE + " LIMIT 1";
 
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -441,15 +440,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
      * @return the number of expired entries that were removed
      */
     public int cleanupExpired() {
-        // Cleanup entries with TTL that have expired, handling both policies correctly
-        String sql = "DELETE FROM " + TABLE_NAME +
-                     " WHERE ttl_seconds IS NOT NULL AND (" +
-                     // ABSOLUTE TTL: expire based on updated_at
-                     "  (ttl_policy = 'ABSOLUTE' AND (updated_at + (ttl_seconds * interval '1 second')) <= now()) " +
-                     "  OR " +
-                     // SLIDING TTL: expire based on last_accessed
-                     "  (ttl_policy = 'SLIDING' AND (last_accessed + (ttl_seconds * interval '1 second')) <= now())" +
-                     ")";
+        String sql = "DELETE FROM " + TABLE_NAME + " WHERE " + EXPIRED_WHERE_CLAUSE;
 
         try (Connection conn = getValidatedConnection();
              Statement stmt = conn.createStatement()) {
@@ -470,16 +461,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
     }
 
-    /**
-     * Checks if a cache entry is expired.
-     *
-     * @param updatedAt the timestamp when the entry was last updated
-     * @param ttlSeconds the TTL in seconds
-     * @return true if the entry is expired, false otherwise
-     */
-    private boolean isExpired(Instant updatedAt, int ttlSeconds) {
-        return Instant.now().isAfter(updatedAt.plusSeconds(ttlSeconds));
-    }
+
 
     /**
      * Creates a builder for PgCacheStore.
@@ -501,6 +483,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         private long cleanupIntervalMinutes = 5;
         private boolean allowNullValues = false;
         private List<CacheEventListener> eventListeners = new ArrayList<>();
+        private Executor asyncExecutor;
 
         private Builder() {
             this.objectMapper = new ObjectMapper();
@@ -580,6 +563,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             return this;
         }
 
+        public Builder asyncExecutor(Executor asyncExecutor) {
+            this.asyncExecutor = asyncExecutor;
+            return this;
+        }
+
         /**
          * Builds a new PgCacheStore instance.
          *
@@ -595,7 +583,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             }
             return new PgCacheStore(dataSource, objectMapper, autoCreateTable, 
                                   enableBackgroundCleanup, cleanupIntervalMinutes, allowNullValues,
-                                  eventListeners);
+                                  eventListeners, asyncExecutor);
         }
     }
 
@@ -603,7 +591,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     private PgCacheStore(DataSource dataSource, ObjectMapper objectMapper, boolean autoCreateTable, 
                          boolean enableBackgroundCleanup, long cleanupIntervalMinutes, boolean allowNullValues,
-                         List<CacheEventListener> eventListeners) {
+                         List<CacheEventListener> eventListeners, Executor asyncExecutor) {
         this.dataSource = dataSource;
         this.objectMapper = objectMapper;
         this.autoCreateTable = autoCreateTable;
@@ -611,6 +599,8 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         this.cleanupIntervalMinutes = cleanupIntervalMinutes;
         this.allowNullValues = allowNullValues;
         this.eventListeners = eventListeners != null ? new ArrayList<>(eventListeners) : new ArrayList<>();
+        this.asyncExecutor = asyncExecutor != null ? asyncExecutor : ForkJoinPool.commonPool();
+        this.eventDispatcher = new CacheEventDispatcher(this.eventListeners);
 
         if (autoCreateTable) {
             initializeTable();
@@ -758,27 +748,14 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                     }
                 }
 
-                // Check if expired based on TTL policy
-                if (ttlSeconds != null) {
-                    boolean expired = false;
-                    if (ttlPolicy == TTLPolicy.SLIDING) {
-                        // For sliding TTL, check against last_accessed time
-                        expired = isExpired(lastAccessed, ttlSeconds);
-                    } else {
-                        // For absolute TTL, check against updated_at time
-                        expired = isExpired(updatedAt, ttlSeconds);
+                if (TtlHelper.isExpired(updatedAt, lastAccessed, ttlSeconds, ttlPolicy)) {
+                    try {
+                        evict(key);
+                    } catch (Exception evictException) {
+                        logger.warn("Failed to evict expired key '{}', continuing with empty result", key, evictException);
                     }
-
-                    if (expired) {
-                        // Safely evict expired key
-                        try {
-                            evict(key);
-                        } catch (Exception evictException) {
-                            logger.warn("Failed to evict expired key '{}', continuing with empty result", key, evictException);
-                        }
-                        missCount.incrementAndGet();
-                        return Optional.empty();
-                    }
+                    missCount.incrementAndGet();
+                    return Optional.empty();
                 }
 
                 // Update last_accessed timestamp for sliding TTL if refreshTTL is true
@@ -1122,14 +1099,8 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                         }
                     }
 
-                    // Check expiration
-                    if (ttlSeconds != null) {
-                        boolean expired = (ttlPolicy == TTLPolicy.SLIDING)
-                                ? isExpired(lastAccessed, ttlSeconds)
-                                : isExpired(updatedAt, ttlSeconds);
-                        if (expired) {
-                            continue; // Skip expired entries (counted as miss below)
-                        }
+                    if (TtlHelper.isExpired(updatedAt, lastAccessed, ttlSeconds, ttlPolicy)) {
+                        continue;
                     }
 
                     // Deserialize value
@@ -1373,11 +1344,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
 
         String sql = "SELECT key FROM " + TABLE_NAME +
-                     " WHERE key LIKE ? AND (" +
-                     "  ttl_seconds IS NULL" +
-                     "  OR (ttl_policy = 'ABSOLUTE' AND (updated_at + (ttl_seconds * interval '1 second')) > now())" +
-                     "  OR (ttl_policy = 'SLIDING' AND (last_accessed + (ttl_seconds * interval '1 second')) > now())" +
-                     ")";
+                     " WHERE key LIKE ? AND " + NOT_EXPIRED_WHERE_CLAUSE;
 
         List<String> keys = new ArrayList<>();
         try (Connection conn = getValidatedConnection();
@@ -1405,21 +1372,21 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     @Override
     public <T> CompletableFuture<Optional<T>> getAsync(String key, Class<T> clazz) {
-        return CompletableFuture.supplyAsync(() -> get(key, clazz));
+        return CompletableFuture.supplyAsync(() -> get(key, clazz), asyncExecutor);
     }
 
     @Override
     public <T> CompletableFuture<Void> putAsync(String key, T value, Duration ttl) {
-        return CompletableFuture.runAsync(() -> put(key, value, ttl));
+        return CompletableFuture.runAsync(() -> put(key, value, ttl), asyncExecutor);
     }
 
     @Override
     public <T> CompletableFuture<Void> putAsync(String key, T value, Duration ttl, TTLPolicy policy) {
-        return CompletableFuture.runAsync(() -> put(key, value, ttl, policy));
+        return CompletableFuture.runAsync(() -> put(key, value, ttl, policy), asyncExecutor);
     }
 
     @Override
     public CompletableFuture<Void> evictAsync(String key) {
-        return CompletableFuture.runAsync(() -> evict(key));
+        return CompletableFuture.runAsync(() -> evict(key), asyncExecutor);
     }
 }
