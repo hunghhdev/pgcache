@@ -113,6 +113,22 @@ class PgCacheSpringIntegrationTest {
     }
 
     @Test
+    void testGetWithValueLoader_propagatesSpringValueRetrievalException() {
+        Cache cache = cacheManager.getCache("loader-failure-cache");
+        IllegalStateException loaderFailure = new IllegalStateException("loader failed");
+
+        Cache.ValueRetrievalException exception = assertThrows(
+                Cache.ValueRetrievalException.class,
+                () -> cache.get("key1", () -> {
+                    throw loaderFailure;
+                })
+        );
+
+        assertSame(loaderFailure, exception.getCause());
+        assertEquals("key1", exception.getKey());
+    }
+
+    @Test
     void testClear_onlyClearsTargetCache() {
         Cache cache1 = cacheManager.getCache("cache1");
         Cache cache2 = cacheManager.getCache("cache2");

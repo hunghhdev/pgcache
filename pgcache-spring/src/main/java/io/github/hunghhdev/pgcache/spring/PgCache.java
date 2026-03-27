@@ -148,6 +148,8 @@ public class PgCache implements Cache {
                 throw new ValueRetrievalException(key, valueLoader, e);
             }
 
+        } catch (ValueRetrievalException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Failed to get/load value from cache '{}' for key '{}': {}", name, key, e.getMessage());
             throw new RuntimeException("Cache operation failed", e);
