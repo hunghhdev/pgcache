@@ -25,6 +25,8 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.ResultSet;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -49,6 +51,9 @@ class PgCacheSpringIntegrationTest {
     
     @Autowired
     private TestCacheService testService;
+
+    @Autowired
+    private DataSource dataSource;
     
     @BeforeEach
     void setUp() {
@@ -105,6 +110,22 @@ class PgCacheSpringIntegrationTest {
         cache.clear();
         assertNull(cache.get("key2"));
         assertNull(cache.get("key3"));
+    }
+
+    @Test
+    void testClear_onlyClearsTargetCache() {
+        Cache cache1 = cacheManager.getCache("cache1");
+        Cache cache2 = cacheManager.getCache("cache2");
+
+        cache1.put("shared-key", "value-from-cache1");
+        cache2.put("shared-key", "value-from-cache2");
+
+        cache1.clear();
+
+        assertNull(cache1.get("shared-key"));
+        Cache.ValueWrapper cache2Value = cache2.get("shared-key");
+        assertNotNull(cache2Value, "Clearing cache1 must not remove cache2 entries");
+        assertEquals("value-from-cache2", cache2Value.get());
     }
     
     @Test
@@ -204,6 +225,27 @@ class PgCacheSpringIntegrationTest {
         // Test remove non-existent cache
         removed = pgCacheManager.removeCache("non-existent");
         assertFalse(removed);
+    }
+
+    @Test
+    void testConfiguredTableName_isUsedForStoreInitialization() throws Exception {
+        cacheManager.getCache("table-name-check");
+
+        try (Connection connection = dataSource.getConnection()) {
+            boolean configuredTableExists;
+            boolean defaultStoreTableExists;
+
+            try (ResultSet configured = connection.getMetaData().getTables(null, null, "test_cache", new String[]{"TABLE"})) {
+                configuredTableExists = configured.next();
+            }
+
+            try (ResultSet defaultStore = connection.getMetaData().getTables(null, null, "pgcache_store", new String[]{"TABLE"})) {
+                defaultStoreTableExists = defaultStore.next();
+            }
+
+            assertTrue(configuredTableExists, "Configured table name should be created and used");
+            assertFalse(defaultStoreTableExists, "Default hard-coded table should not be created when custom tableName is configured");
+        }
     }
     
     @Test

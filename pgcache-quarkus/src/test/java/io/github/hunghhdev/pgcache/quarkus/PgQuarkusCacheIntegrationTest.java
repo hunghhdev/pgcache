@@ -144,6 +144,63 @@ class PgQuarkusCacheIntegrationTest {
     }
 
     @Test
+    void testInvalidateAll_onlyClearsTargetCache() {
+        PgQuarkusCache cache1 = cacheManager.getOrCreateCache("cache1");
+        PgQuarkusCache cache2 = cacheManager.getOrCreateCache("cache2");
+
+        cache1.<String, String>get("shared-key", k -> "value-from-cache1").await().indefinitely();
+        cache2.<String, String>get("shared-key", k -> "value-from-cache2").await().indefinitely();
+
+        cache1.invalidateAll().await().indefinitely();
+
+        AtomicInteger cache1Loads = new AtomicInteger(0);
+        AtomicInteger cache2Loads = new AtomicInteger(0);
+
+        String cache1Value = cache1.<String, String>get("shared-key", k -> {
+            cache1Loads.incrementAndGet();
+            return "reloaded-cache1";
+        }).await().indefinitely();
+
+        String cache2Value = cache2.<String, String>get("shared-key", k -> {
+            cache2Loads.incrementAndGet();
+            return "reloaded-cache2";
+        }).await().indefinitely();
+
+        assertEquals("reloaded-cache1", cache1Value);
+        assertEquals(1, cache1Loads.get());
+        assertEquals("value-from-cache2", cache2Value, "Invalidating cache1 must not wipe cache2");
+        assertEquals(0, cache2Loads.get(), "cache2 entry should remain cached");
+    }
+
+    @Test
+    void testInvalidateIf_onlyClearsMatchingEntries() {
+        PgQuarkusCache cache = cacheManager.getOrCreateCache("predicate-cache");
+
+        cache.<String, String>get("admin:1", k -> "admin-value").await().indefinitely();
+        cache.<String, String>get("user:1", k -> "user-value").await().indefinitely();
+
+        cache.invalidateIf(key -> key.toString().startsWith("admin:")).await().indefinitely();
+
+        AtomicInteger adminLoads = new AtomicInteger(0);
+        AtomicInteger userLoads = new AtomicInteger(0);
+
+        String adminValue = cache.<String, String>get("admin:1", k -> {
+            adminLoads.incrementAndGet();
+            return "admin-reloaded";
+        }).await().indefinitely();
+
+        String userValue = cache.<String, String>get("user:1", k -> {
+            userLoads.incrementAndGet();
+            return "user-reloaded";
+        }).await().indefinitely();
+
+        assertEquals("admin-reloaded", adminValue);
+        assertEquals(1, adminLoads.get());
+        assertEquals("user-value", userValue, "Predicate invalidation should preserve non-matching keys");
+        assertEquals(0, userLoads.get(), "Non-matching key should remain cached");
+    }
+
+    @Test
     void testCacheSize() {
         PgQuarkusCache cache = cacheManager.getOrCreateCache("size-test-cache");
 

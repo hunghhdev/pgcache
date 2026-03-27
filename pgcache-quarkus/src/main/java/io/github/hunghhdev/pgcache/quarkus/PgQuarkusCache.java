@@ -10,9 +10,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
-import java.util.Optional;
+import java.util.Collection;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
 /**
  * Quarkus Cache implementation backed by PgCacheStore.
@@ -122,7 +123,7 @@ public class PgQuarkusCache implements Cache {
     public Uni<Void> invalidateAll() {
         // Clear is still sync in core, so run on worker pool
         return Uni.createFrom().item(() -> {
-            cacheStore.clear();
+            cacheStore.evictByPattern(name + ":%");
             logger.debug("Invalidated all entries from cache '{}'", name);
             return (Void) null;
         })
@@ -134,7 +135,14 @@ public class PgQuarkusCache implements Cache {
         // Complex invalidation, run on worker pool
         return Uni.createFrom().item(() -> {
             String pattern = name + ":%";
-            cacheStore.evictByPattern(pattern);
+            Collection<String> scopedKeys = cacheStore.getKeys(pattern);
+            Collection<String> keysToEvict = scopedKeys.stream()
+                    .filter(scopedKey -> predicate.test(toOriginalKey(scopedKey)))
+                    .collect(Collectors.toList());
+
+            if (!keysToEvict.isEmpty()) {
+                cacheStore.evictAll(keysToEvict);
+            }
             logger.debug("Invalidated entries by predicate from cache '{}'", name);
             return (Void) null;
         })
@@ -164,5 +172,13 @@ public class PgQuarkusCache implements Cache {
 
     private String toKeyString(Object key) {
         return name + ":" + key.toString();
+    }
+
+    private String toOriginalKey(String scopedKey) {
+        String prefix = name + ":";
+        if (scopedKey != null && scopedKey.startsWith(prefix)) {
+            return scopedKey.substring(prefix.length());
+        }
+        return scopedKey;
     }
 }

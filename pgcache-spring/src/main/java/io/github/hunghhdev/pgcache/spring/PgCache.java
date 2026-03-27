@@ -264,7 +264,7 @@ public class PgCache implements Cache {
     @Override
     public void clear() {
         try {
-            cacheStore.clear();
+            cacheStore.evictByPattern(name + ":%");
             logger.debug("Cleared cache '{}'", name);
         } catch (Exception e) {
             logger.error("Failed to clear cache '{}': {}", name, e.getMessage());

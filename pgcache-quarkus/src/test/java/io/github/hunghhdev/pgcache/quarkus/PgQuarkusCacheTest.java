@@ -102,10 +102,27 @@ class PgQuarkusCacheTest {
 
     @Test
     void invalidateAll_clearsCache() {
+        when(cacheStore.evictByPattern(eq("test:%")))
+            .thenReturn(0);
+
         Uni<Void> result = cache.invalidateAll();
         result.await().indefinitely();
 
-        verify(cacheStore).clear();
+        verify(cacheStore).evictByPattern("test:%");
+    }
+
+    @Test
+    void invalidateIf_evictsOnlyMatchingKeys() {
+        when(cacheStore.getKeys(eq("test:%")))
+            .thenReturn(java.util.Arrays.asList("test:admin:1", "test:user:1"));
+        when(cacheStore.evictAll(anyCollection()))
+            .thenReturn(1);
+
+        Uni<Void> result = cache.invalidateIf(key -> key.toString().startsWith("admin:"));
+        result.await().indefinitely();
+
+        verify(cacheStore).getKeys("test:%");
+        verify(cacheStore).evictAll(argThat(keys -> keys.size() == 1 && keys.contains("test:admin:1")));
     }
 
     @Test

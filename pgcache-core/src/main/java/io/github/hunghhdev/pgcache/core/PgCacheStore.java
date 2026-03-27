@@ -43,30 +43,7 @@ import org.slf4j.LoggerFactory;
  */
 public class PgCacheStore implements PgCacheClient, AutoCloseable {
     private static final Logger logger = LoggerFactory.getLogger(PgCacheStore.class);
-    private static final String TABLE_NAME = "pgcache_store";
-    private static final String CREATE_TABLE_SQL =
-        "CREATE UNLOGGED TABLE IF NOT EXISTS " + TABLE_NAME + " (" +
-        "  key TEXT PRIMARY KEY, " +
-        "  value JSONB NOT NULL, " +
-        "  updated_at TIMESTAMP DEFAULT now(), " +
-        "  ttl_seconds INT, " +
-        "  ttl_policy VARCHAR(10) DEFAULT 'ABSOLUTE', " +
-        "  last_accessed TIMESTAMP DEFAULT now()" +
-        ")";
-
-    private static final String CREATE_GIN_INDEX_SQL =
-        "CREATE INDEX IF NOT EXISTS " + TABLE_NAME + "_value_gin_idx " +
-        "ON " + TABLE_NAME + " USING GIN (value jsonb_path_ops)";
-
-    private static final String CREATE_TTL_INDEX_SQL =
-        "CREATE INDEX IF NOT EXISTS " + TABLE_NAME + "_ttl_idx " +
-        "ON " + TABLE_NAME + " (updated_at, ttl_seconds) " +
-        "WHERE ttl_seconds IS NOT NULL";
-
-    private static final String CREATE_SLIDING_TTL_INDEX_SQL =
-        "CREATE INDEX IF NOT EXISTS " + TABLE_NAME + "_sliding_ttl_idx " +
-        "ON " + TABLE_NAME + " (ttl_policy, last_accessed) " +
-        "WHERE ttl_policy = 'SLIDING'";
+    private static final String DEFAULT_TABLE_NAME = "pgcache_store";
 
     /**
      * SQL WHERE clause for checking non-expired entries.
@@ -88,6 +65,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
+    private final String tableName;
     private final boolean autoCreateTable;
     private final boolean enableBackgroundCleanup;
     private final long cleanupIntervalMinutes;
@@ -118,6 +96,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     public PgCacheStore(DataSource dataSource, boolean autoCreateTable) {
         this.dataSource = dataSource;
         this.objectMapper = new ObjectMapper();
+        this.tableName = DEFAULT_TABLE_NAME;
         this.autoCreateTable = autoCreateTable;
         this.enableBackgroundCleanup = false;
         this.cleanupIntervalMinutes = 5;
@@ -167,25 +146,25 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
             // Check if table already exists
             boolean tableExists = false;
-            try (ResultSet rs = conn.getMetaData().getTables(null, null, TABLE_NAME, new String[] {"TABLE"})) {
+            try (ResultSet rs = conn.getMetaData().getTables(null, null, tableName, new String[] {"TABLE"})) {
                 tableExists = rs.next();
             }
 
             // Create table with dynamic UNLOGGED option
-            stmt.execute(CREATE_TABLE_SQL);
+            stmt.execute(createTableSql());
 
             // Create GIN index on value column for JSONB data
-            stmt.execute(CREATE_GIN_INDEX_SQL);
+            stmt.execute(createGinIndexSql());
             // Create TTL index for efficient expiration queries
-            stmt.execute(CREATE_TTL_INDEX_SQL);
+            stmt.execute(createTtlIndexSql());
             // Create sliding TTL index for efficient sliding TTL queries
-            stmt.execute(CREATE_SLIDING_TTL_INDEX_SQL);
+            stmt.execute(createSlidingTtlIndexSql());
 
             // Log table creation status
             if (!tableExists) {
-                logger.info("UNLOGGED table '{}' was created successfully", TABLE_NAME);
+                logger.info("UNLOGGED table '{}' was created successfully", tableName);
             } else {
-                logger.debug("Table '{}' already exists, skipping creation", TABLE_NAME);
+                logger.debug("Table '{}' already exists, skipping creation", tableName);
             }
         } catch (SQLException e) {
             logger.error("Failed to initialize cache table", e);
@@ -201,7 +180,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     public boolean tableExists() {
         try (Connection conn = getValidatedConnection()) {
             try (ResultSet tables = conn.getMetaData().getTables(
-                    null, null, TABLE_NAME, new String[] {"TABLE"})) {
+                    null, null, tableName, new String[] {"TABLE"})) {
                 return tables.next();
             }
         } catch (SQLException e) {
@@ -235,7 +214,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
 
         // SQL for upsert without TTL (permanent entry)
-        String sql = "INSERT INTO " + TABLE_NAME +
+        String sql = "INSERT INTO " + tableName +
                      " (key, value, updated_at, ttl_seconds) " +
                      "VALUES (?, ?::jsonb, now(), NULL) " +
                      "ON CONFLICT (key) DO UPDATE SET " +
@@ -286,7 +265,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         int ttlSeconds = (int) ttl.getSeconds();
 
         // SQL for upsert (PostgreSQL specific) with sliding TTL support
-        String sql = "INSERT INTO " + TABLE_NAME +
+        String sql = "INSERT INTO " + tableName +
                      " (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
                      "VALUES (?, ?::jsonb, now(), ?, ?, now()) " +
                      "ON CONFLICT (key) DO UPDATE SET " +
@@ -322,7 +301,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             throw new PgCacheException("Cache key cannot be null or empty");
         }
 
-        String sql = "DELETE FROM " + TABLE_NAME + " WHERE key = ?";
+        String sql = "DELETE FROM " + tableName + " WHERE key = ?";
 
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -341,7 +320,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     @Override
     public void clear() {
-        String sql = "DELETE FROM " + TABLE_NAME;
+        String sql = "DELETE FROM " + tableName;
 
         try (Connection conn = getValidatedConnection();
              Statement stmt = conn.createStatement()) {
@@ -387,7 +366,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             return cachedSize;
         }
         
-        String sql = "SELECT COUNT(*) FROM " + TABLE_NAME + " WHERE " + NOT_EXPIRED_WHERE_CLAUSE;
+        String sql = "SELECT COUNT(*) FROM " + tableName + " WHERE " + NOT_EXPIRED_WHERE_CLAUSE;
 
         try (Connection conn = getValidatedConnection();
              Statement stmt = conn.createStatement();
@@ -413,7 +392,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             throw new PgCacheException("Cache key cannot be null or empty");
         }
 
-        String sql = "SELECT 1 FROM " + TABLE_NAME +
+        String sql = "SELECT 1 FROM " + tableName +
                      " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE + " LIMIT 1";
 
         try (Connection conn = getValidatedConnection();
@@ -440,7 +419,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
      * @return the number of expired entries that were removed
      */
     public int cleanupExpired() {
-        String sql = "DELETE FROM " + TABLE_NAME + " WHERE " + EXPIRED_WHERE_CLAUSE;
+        String sql = "DELETE FROM " + tableName + " WHERE " + EXPIRED_WHERE_CLAUSE;
 
         try (Connection conn = getValidatedConnection();
              Statement stmt = conn.createStatement()) {
@@ -482,6 +461,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         private boolean enableBackgroundCleanup = false;
         private long cleanupIntervalMinutes = 5;
         private boolean allowNullValues = false;
+        private String tableName = DEFAULT_TABLE_NAME;
         private List<CacheEventListener> eventListeners = new ArrayList<>();
         private Executor asyncExecutor;
 
@@ -556,6 +536,14 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             return this;
         }
 
+        public Builder tableName(String tableName) {
+            if (tableName == null || tableName.trim().isEmpty()) {
+                throw new IllegalArgumentException("tableName cannot be null or empty");
+            }
+            this.tableName = tableName.trim();
+            return this;
+        }
+
         public Builder addEventListener(CacheEventListener listener) {
             if (listener != null) {
                 this.eventListeners.add(listener);
@@ -581,7 +569,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             if (objectMapper == null) {
                 objectMapper = new ObjectMapper();
             }
-            return new PgCacheStore(dataSource, objectMapper, autoCreateTable, 
+            return new PgCacheStore(dataSource, objectMapper, tableName, autoCreateTable, 
                                   enableBackgroundCleanup, cleanupIntervalMinutes, allowNullValues,
                                   eventListeners, asyncExecutor);
         }
@@ -589,11 +577,12 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     private final List<CacheEventListener> eventListeners;
 
-    private PgCacheStore(DataSource dataSource, ObjectMapper objectMapper, boolean autoCreateTable, 
+    private PgCacheStore(DataSource dataSource, ObjectMapper objectMapper, String tableName, boolean autoCreateTable, 
                          boolean enableBackgroundCleanup, long cleanupIntervalMinutes, boolean allowNullValues,
                          List<CacheEventListener> eventListeners, Executor asyncExecutor) {
         this.dataSource = dataSource;
         this.objectMapper = objectMapper;
+        this.tableName = tableName != null && !tableName.trim().isEmpty() ? tableName.trim() : DEFAULT_TABLE_NAME;
         this.autoCreateTable = autoCreateTable;
         this.enableBackgroundCleanup = enableBackgroundCleanup;
         this.cleanupIntervalMinutes = cleanupIntervalMinutes;
@@ -708,7 +697,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             throw new PgCacheException("Cache key cannot be null or empty");
         }
 
-        String sql = "SELECT value, updated_at, ttl_seconds, ttl_policy, last_accessed FROM " + TABLE_NAME +
+        String sql = "SELECT value, updated_at, ttl_seconds, ttl_policy, last_accessed FROM " + tableName +
                      " WHERE key = ?";
 
         try (Connection conn = getValidatedConnection();
@@ -795,7 +784,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     }
 
     private void updateLastAccessed(String key) {
-        String sql = "UPDATE " + TABLE_NAME + " SET last_accessed = now() WHERE key = ?";
+        String sql = "UPDATE " + tableName + " SET last_accessed = now() WHERE key = ?";
 
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -814,7 +803,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             throw new PgCacheException("Cache key cannot be null or empty");
         }
 
-        String sql = "SELECT updated_at, ttl_seconds, ttl_policy, last_accessed FROM " + TABLE_NAME +
+        String sql = "SELECT updated_at, ttl_seconds, ttl_policy, last_accessed FROM " + tableName +
                      " WHERE key = ?";
 
         try (Connection conn = getValidatedConnection();
@@ -878,7 +867,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             throw new PgCacheException("Cache key cannot be null or empty");
         }
 
-        String sql = "SELECT ttl_policy FROM " + TABLE_NAME + " WHERE key = ?";
+        String sql = "SELECT ttl_policy FROM " + tableName + " WHERE key = ?";
 
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -917,7 +906,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
 
         // First try to update existing entry (may include permanent entries)
-        String sql = "UPDATE " + TABLE_NAME + 
+        String sql = "UPDATE " + tableName + 
                      " SET ttl_seconds = ?, ttl_policy = ?, updated_at = CURRENT_TIMESTAMP, last_accessed = CURRENT_TIMESTAMP " +
                      " WHERE key = ?";
 
@@ -970,7 +959,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
         // Atomic insert - only inserts if key doesn't exist
         // Uses ON CONFLICT DO NOTHING to avoid race conditions
-        String insertSql = "INSERT INTO " + TABLE_NAME +
+        String insertSql = "INSERT INTO " + tableName +
                      " (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
                      "VALUES (?, ?::jsonb, now(), ?, ?, now()) " +
                      "ON CONFLICT (key) DO NOTHING";
@@ -1018,7 +1007,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
 
         // Atomic insert for permanent entry
-        String insertSql = "INSERT INTO " + TABLE_NAME +
+        String insertSql = "INSERT INTO " + tableName +
                      " (key, value, updated_at, ttl_seconds) " +
                      "VALUES (?, ?::jsonb, now(), NULL) " +
                      "ON CONFLICT (key) DO NOTHING";
@@ -1062,7 +1051,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         // Build SQL with placeholders
         StringBuilder sql = new StringBuilder();
         sql.append("SELECT key, value, updated_at, ttl_seconds, ttl_policy, last_accessed FROM ");
-        sql.append(TABLE_NAME);
+        sql.append(tableName);
         sql.append(" WHERE key IN (");
         for (int i = 0; i < keyList.size(); i++) {
             sql.append(i > 0 ? ", ?" : "?");
@@ -1159,7 +1148,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
         int ttlSeconds = (int) ttl.getSeconds();
 
-        String sql = "INSERT INTO " + TABLE_NAME +
+        String sql = "INSERT INTO " + tableName +
                      " (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
                      "VALUES (?, ?::jsonb, now(), ?, ?, now()) " +
                      "ON CONFLICT (key) DO UPDATE SET " +
@@ -1210,7 +1199,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             return;
         }
 
-        String sql = "INSERT INTO " + TABLE_NAME +
+        String sql = "INSERT INTO " + tableName +
                      " (key, value, updated_at, ttl_seconds) " +
                      "VALUES (?, ?::jsonb, now(), NULL) " +
                      "ON CONFLICT (key) DO UPDATE SET " +
@@ -1260,7 +1249,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         List<String> keyList = new ArrayList<>(keys);
 
         StringBuilder sql = new StringBuilder();
-        sql.append("DELETE FROM ").append(TABLE_NAME).append(" WHERE key IN (");
+        sql.append("DELETE FROM ").append(tableName).append(" WHERE key IN (");
         for (int i = 0; i < keyList.size(); i++) {
             sql.append(i > 0 ? ", ?" : "?");
         }
@@ -1293,7 +1282,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             throw new PgCacheException("Pattern cannot be null or empty");
         }
 
-        String sql = "DELETE FROM " + TABLE_NAME + " WHERE key LIKE ?";
+        String sql = "DELETE FROM " + tableName + " WHERE key LIKE ?";
 
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -1343,7 +1332,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             throw new PgCacheException("Pattern cannot be null or empty");
         }
 
-        String sql = "SELECT key FROM " + TABLE_NAME +
+        String sql = "SELECT key FROM " + tableName +
                      " WHERE key LIKE ? AND " + NOT_EXPIRED_WHERE_CLAUSE;
 
         List<String> keys = new ArrayList<>();
@@ -1388,5 +1377,33 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     @Override
     public CompletableFuture<Void> evictAsync(String key) {
         return CompletableFuture.runAsync(() -> evict(key), asyncExecutor);
+    }
+
+    private String createTableSql() {
+        return "CREATE UNLOGGED TABLE IF NOT EXISTS " + tableName + " (" +
+               "  key TEXT PRIMARY KEY, " +
+               "  value JSONB NOT NULL, " +
+               "  updated_at TIMESTAMP DEFAULT now(), " +
+               "  ttl_seconds INT, " +
+               "  ttl_policy VARCHAR(10) DEFAULT 'ABSOLUTE', " +
+               "  last_accessed TIMESTAMP DEFAULT now()" +
+               ")";
+    }
+
+    private String createGinIndexSql() {
+        return "CREATE INDEX IF NOT EXISTS " + tableName + "_value_gin_idx " +
+               "ON " + tableName + " USING GIN (value jsonb_path_ops)";
+    }
+
+    private String createTtlIndexSql() {
+        return "CREATE INDEX IF NOT EXISTS " + tableName + "_ttl_idx " +
+               "ON " + tableName + " (updated_at, ttl_seconds) " +
+               "WHERE ttl_seconds IS NOT NULL";
+    }
+
+    private String createSlidingTtlIndexSql() {
+        return "CREATE INDEX IF NOT EXISTS " + tableName + "_sliding_ttl_idx " +
+               "ON " + tableName + " (ttl_policy, last_accessed) " +
+               "WHERE ttl_policy = 'SLIDING'";
     }
 }
