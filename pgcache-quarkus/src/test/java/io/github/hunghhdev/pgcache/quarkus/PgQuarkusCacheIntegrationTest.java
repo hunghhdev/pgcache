@@ -122,6 +122,32 @@ class PgQuarkusCacheIntegrationTest {
     }
 
     @Test
+    void testNullDefaultTtl_createsPermanentEntries() {
+        PgQuarkusCacheManager permanentCacheManager = new PgQuarkusCacheManager(
+                cacheStore,
+                null,
+                true,
+                TTLPolicy.ABSOLUTE
+        );
+        PgQuarkusCache cache = permanentCacheManager.getOrCreateCache("permanent-cache");
+
+        AtomicInteger loadCount = new AtomicInteger(0);
+        String first = cache.<String, String>get("key1", k -> {
+            loadCount.incrementAndGet();
+            return "value1";
+        }).await().indefinitely();
+
+        String second = cache.<String, String>get("key1", k -> {
+            loadCount.incrementAndGet();
+            return "value2";
+        }).await().indefinitely();
+
+        assertEquals("value1", first);
+        assertEquals("value1", second);
+        assertEquals(1, loadCount.get(), "Entry should be cached permanently when default TTL is unset");
+    }
+
+    @Test
     void testInvalidateAll() {
         PgQuarkusCache cache = cacheManager.getOrCreateCache("test-cache");
 

@@ -72,9 +72,7 @@ public class PgQuarkusCache implements Cache {
                     .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
                     .call(value -> {
                         if (value != null || allowNullValues) {
-                            return Uni.createFrom().completionStage(() -> 
-                                cacheStore.putAsync(keyStr, value, defaultTtl, ttlPolicy)
-                            );
+                            return storeValue(keyStr, value);
                         }
                         return Uni.createFrom().voidItem();
                     });
@@ -100,9 +98,7 @@ public class PgQuarkusCache implements Cache {
                 return valueLoader.apply(key)
                     .call(value -> {
                         if (value != null || allowNullValues) {
-                            return Uni.createFrom().completionStage(() -> 
-                                cacheStore.putAsync(keyStr, value, defaultTtl, ttlPolicy)
-                            );
+                            return storeValue(keyStr, value);
                         }
                         return Uni.createFrom().voidItem();
                     });
@@ -168,6 +164,19 @@ public class PgQuarkusCache implements Cache {
 
     public void cleanupExpired() {
         cacheStore.cleanupExpired();
+    }
+
+    private Uni<Void> storeValue(String key, Object value) {
+        if (defaultTtl == null) {
+            return Uni.createFrom().item(() -> {
+                cacheStore.put(key, value);
+                return (Void) null;
+            }).runSubscriptionOn(Infrastructure.getDefaultWorkerPool());
+        }
+
+        return Uni.createFrom().completionStage(() ->
+                cacheStore.putAsync(key, value, defaultTtl, ttlPolicy)
+        );
     }
 
     private String toKeyString(Object key) {

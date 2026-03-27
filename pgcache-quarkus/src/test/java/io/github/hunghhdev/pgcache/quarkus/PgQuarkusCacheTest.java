@@ -89,6 +89,40 @@ class PgQuarkusCacheTest {
     }
 
     @Test
+    void get_cacheMiss_withoutDefaultTtl_cachesPermanentValue() {
+        String key = "key1";
+        String loadedValue = "loaded-value";
+        PgQuarkusCache permanentCache = new PgQuarkusCache("test", cacheStore, null, true, TTLPolicy.ABSOLUTE);
+
+        when(cacheStore.getAsync(eq("test:" + key), eq(Object.class)))
+            .thenReturn(CompletableFuture.completedFuture(Optional.empty()));
+
+        Uni<String> result = permanentCache.get(key, k -> loadedValue);
+        String value = result.await().indefinitely();
+
+        assertEquals(loadedValue, value);
+        verify(cacheStore).put(eq("test:" + key), eq(loadedValue));
+        verify(cacheStore, never()).putAsync(anyString(), any(), isNull(), any(TTLPolicy.class));
+    }
+
+    @Test
+    void getAsync_cacheMiss_withoutDefaultTtl_cachesPermanentValue() {
+        String key = "key1";
+        String loadedValue = "loaded-value";
+        PgQuarkusCache permanentCache = new PgQuarkusCache("test", cacheStore, null, true, TTLPolicy.ABSOLUTE);
+
+        when(cacheStore.getAsync(eq("test:" + key), eq(Object.class)))
+            .thenReturn(CompletableFuture.completedFuture(Optional.empty()));
+
+        Uni<String> result = permanentCache.getAsync(key, k -> Uni.createFrom().item(loadedValue));
+        String value = result.await().indefinitely();
+
+        assertEquals(loadedValue, value);
+        verify(cacheStore).put(eq("test:" + key), eq(loadedValue));
+        verify(cacheStore, never()).putAsync(anyString(), any(), isNull(), any(TTLPolicy.class));
+    }
+
+    @Test
     void invalidate_evictsFromCache() {
         String key = "key1";
         when(cacheStore.evictAsync(eq("test:" + key)))
