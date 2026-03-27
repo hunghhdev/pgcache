@@ -159,7 +159,7 @@ public class PgQuarkusCache implements Cache {
     }
 
     public long size() {
-        return cacheStore.size();
+        return cacheStore.getKeys(name + ":%").size();
     }
 
     public void cleanupExpired() {

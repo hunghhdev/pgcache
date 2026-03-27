@@ -175,11 +175,12 @@ class PgQuarkusCacheTest {
 
     @Test
     void size_delegatesToCacheStore() {
-        when(cacheStore.size()).thenReturn(42);
+        when(cacheStore.getKeys("test:%")).thenReturn(java.util.Arrays.asList("test:key1", "test:key2"));
 
         long size = cache.size();
 
-        assertEquals(42, size);
+        assertEquals(2, size);
+        verify(cacheStore).getKeys("test:%");
     }
 
     @Test

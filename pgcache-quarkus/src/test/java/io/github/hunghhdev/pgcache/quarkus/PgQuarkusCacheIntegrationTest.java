@@ -245,6 +245,18 @@ class PgQuarkusCacheIntegrationTest {
     }
 
     @Test
+    void testCacheSize_isScopedPerCache() {
+        PgQuarkusCache cache1 = cacheManager.getOrCreateCache("size-cache-1");
+        PgQuarkusCache cache2 = cacheManager.getOrCreateCache("size-cache-2");
+
+        cache1.<String, String>get("key1", k -> "value1").await().indefinitely();
+        cache2.<String, String>get("key1", k -> "value2").await().indefinitely();
+
+        assertEquals(1, cache1.size(), "cache1 size should only count cache1 entries");
+        assertEquals(1, cache2.size(), "cache2 size should only count cache2 entries");
+    }
+
+    @Test
     void testMultipleCaches() {
         Optional<Cache> cache1 = cacheManager.getCache("cache1");
         Optional<Cache> cache2 = cacheManager.getCache("cache2");

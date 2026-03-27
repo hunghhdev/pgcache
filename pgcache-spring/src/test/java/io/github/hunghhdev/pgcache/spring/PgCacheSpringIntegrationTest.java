@@ -23,6 +23,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import io.github.hunghhdev.pgcache.core.CacheStatistics;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.springframework.boot.actuate.health.Health;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -216,27 +217,41 @@ class PgCacheSpringIntegrationTest {
         cache.clear();
         assertEquals(0, cache.size());
     }
+
+    @Test
+    void testCacheSize_isScopedPerCache() {
+        PgCache cache1 = (PgCache) cacheManager.getCache("cache1");
+        PgCache cache2 = (PgCache) cacheManager.getCache("cache2");
+
+        cache1.put("key1", "value1");
+        cache2.put("key1", "value2");
+
+        assertEquals(1, cache1.size(), "cache1 size should only count cache1 entries");
+        assertEquals(1, cache2.size(), "cache2 size should only count cache2 entries");
+    }
     
     @Test
     void testCacheManagerOperations() {
         PgCacheManager pgCacheManager = (PgCacheManager) cacheManager;
+        String firstCacheName = "manager-cache-1";
+        String secondCacheName = "manager-cache-2";
         
         // Get initial cache count (may not be empty due to previous tests)
         int initialCacheCount = pgCacheManager.getCacheCount();
         
         // Create some caches
-        cacheManager.getCache("cache1");
-        cacheManager.getCache("cache2");
+        cacheManager.getCache(firstCacheName);
+        cacheManager.getCache(secondCacheName);
         
         assertEquals(initialCacheCount + 2, pgCacheManager.getCacheCount());
-        assertTrue(pgCacheManager.getCacheNames().contains("cache1"));
-        assertTrue(pgCacheManager.getCacheNames().contains("cache2"));
+        assertTrue(pgCacheManager.getCacheNames().contains(firstCacheName));
+        assertTrue(pgCacheManager.getCacheNames().contains(secondCacheName));
         
         // Test remove cache
-        boolean removed = pgCacheManager.removeCache("cache1");
+        boolean removed = pgCacheManager.removeCache(firstCacheName);
         assertTrue(removed);
         assertEquals(initialCacheCount + 1, pgCacheManager.getCacheCount());
-        assertFalse(pgCacheManager.getCacheNames().contains("cache1"));
+        assertFalse(pgCacheManager.getCacheNames().contains(firstCacheName));
         
         // Test remove non-existent cache
         removed = pgCacheManager.removeCache("non-existent");
@@ -317,6 +332,37 @@ class PgCacheSpringIntegrationTest {
         assertNotNull(registry.find("pgcache.evictions").functionCounter());
         assertNotNull(registry.find("pgcache.size").gauge());
         assertNotNull(registry.find("pgcache.hit.rate").gauge());
+    }
+
+    @Test
+    void testMicrometerSizeGauge_isScopedPerCache() {
+        PgCache cache1 = (PgCache) cacheManager.getCache("metric-cache-1");
+        PgCache cache2 = (PgCache) cacheManager.getCache("metric-cache-2");
+
+        cache1.put("key1", "value1");
+        cache2.put("key1", "value2");
+
+        MeterRegistry registry = new SimpleMeterRegistry();
+        PgCacheMetrics.monitor(cache1, registry);
+        PgCacheMetrics.monitor(cache2, registry);
+
+        assertEquals(1.0, registry.find("pgcache.size").tag("cache", "metric-cache-1").gauge().value());
+        assertEquals(1.0, registry.find("pgcache.size").tag("cache", "metric-cache-2").gauge().value());
+    }
+
+    @Test
+    void testHealthIndicator_reportsScopedSizesAcrossCaches() {
+        PgCache cache1 = (PgCache) cacheManager.getCache("health-cache-1");
+        PgCache cache2 = (PgCache) cacheManager.getCache("health-cache-2");
+
+        cache1.put("key1", "value1");
+        cache2.put("key1", "value2");
+
+        Health health = new PgCacheHealthIndicator((PgCacheManager) cacheManager).health();
+
+        assertEquals(1L, health.getDetails().get("cache.health-cache-1.size"));
+        assertEquals(1L, health.getDetails().get("cache.health-cache-2.size"));
+        assertEquals(2L, health.getDetails().get("cache.total.size"));
     }
 
     @Configuration

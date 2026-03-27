@@ -279,7 +279,7 @@ public class PgCache implements Cache {
      */
     public long size() {
         try {
-            return cacheStore.size();
+            return cacheStore.getKeys(name + ":%").size();
         } catch (Exception e) {
             logger.warn("Failed to get size of cache '{}': {}", name, e.getMessage());
             return 0;
