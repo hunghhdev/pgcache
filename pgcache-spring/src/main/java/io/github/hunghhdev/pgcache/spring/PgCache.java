@@ -103,7 +103,7 @@ public class PgCache implements Cache {
             return value;
         } catch (Exception e) {
             logger.warn("Failed to get value from cache '{}' for key '{}' with type {}: {}",
-                       name, key, type.getSimpleName(), e.getMessage());
+                       name, key, safeTypeName(type), e.getMessage());
             return null;
         }
     }
@@ -326,9 +326,13 @@ public class PgCache implements Cache {
             return value;
         } catch (Exception e) {
             logger.warn("Failed to get value from cache '{}' for key '{}' with type {} and refreshTTL={}: {}",
-                       name, key, type.getSimpleName(), refreshTTL, e.getMessage());
+                       name, key, safeTypeName(type), refreshTTL, e.getMessage());
             return null;
         }
+    }
+
+    private String safeTypeName(Class<?> type) {
+        return type != null ? type.getSimpleName() : "null";
     }
     
     /**

@@ -130,6 +130,14 @@ class PgCacheSpringIntegrationTest {
     }
 
     @Test
+    void testTypedGet_withNullType_doesNotThrowAndReturnsNull() {
+        Cache cache = cacheManager.getCache("null-type-cache");
+        cache.put("existing-key", "value1");
+
+        assertDoesNotThrow(() -> assertNull(cache.get("existing-key", (Class<Object>) null)));
+    }
+
+    @Test
     void testClear_onlyClearsTargetCache() {
         Cache cache1 = cacheManager.getCache("cache1");
         Cache cache2 = cacheManager.getCache("cache2");
