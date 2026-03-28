@@ -225,7 +225,7 @@ public class PgCacheProperties {
             
             // Use configured TTL policy or default to ABSOLUTE
             io.github.hunghhdev.pgcache.core.TTLPolicy effectivePolicy = 
-                this.ttlPolicy != null ? this.ttlPolicy : io.github.hunghhdev.pgcache.core.TTLPolicy.ABSOLUTE;
+                this.ttlPolicy != null ? this.ttlPolicy : globalProperties.getTtlPolicy();
             
             return new PgCacheManager.PgCacheConfiguration(
                 effectiveTtl,
