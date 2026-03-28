@@ -1,7 +1,7 @@
 # PgCache
 
 [![Java](https://img.shields.io/badge/Java-11%2B-blue.svg)](https://www.oracle.com/java/)
-[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.6.0-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache)
+[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.6.1-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 **A simple caching library that uses your existing PostgreSQL as cache backend.**
@@ -59,21 +59,21 @@ Perfect for small-to-medium applications that want caching without the complexit
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-core</artifactId>
-  <version>1.6.0</version>
+  <version>1.6.1</version>
 </dependency>
 
 <!-- Spring Boot integration -->
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-spring</artifactId>
-  <version>1.6.0</version>
+  <version>1.6.1</version>
 </dependency>
 
 <!-- Quarkus integration -->
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-quarkus</artifactId>
-  <version>1.6.0</version>
+  <version>1.6.1</version>
 </dependency>
 ```
 
@@ -168,11 +168,11 @@ cache.put("user:123", user, Duration.ofHours(1));
 // Retrieve
 Optional<User> user = cache.get("user:123", User.class);
 
-// Async Operations (v1.6.0)
+// Async Operations (v1.6.1)
 cache.getAsync("user:123", User.class)
      .thenAccept(opt -> System.out.println(opt.orElse(null)));
 
-// Key Check (v1.6.0) - Efficient existence check
+// Key Check (v1.6.1) - Efficient existence check
 boolean exists = cache.containsKey("user:123");
 
 // Pattern Operations
@@ -180,7 +180,7 @@ cache.getKeys("user:%"); // Get all user keys
 cache.evictByPattern("user:%"); // Evict all user keys
 ```
 
-### Event Listeners (v1.6.0)
+### Event Listeners (v1.6.1)
 
 Monitor cache operations by registering listeners:
 
@@ -209,7 +209,7 @@ public class MyCacheListener implements CacheEventListener {
 }
 ```
 
-### Quarkus Health Check (v1.6.0)
+### Quarkus Health Check (v1.6.1)
 
 Add cache health status to your Quarkus Health endpoint:
 
