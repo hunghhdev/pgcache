@@ -163,12 +163,11 @@ class PgCacheStoreThreadSafetyTest {
         
         cache.clear();
         
-        // Put entries with very short TTL
         String key = "expiring-key";
-        cache.put(key, new TestObject("expiring", 123), Duration.ofMillis(100));
+        cache.put(key, new TestObject("expiring", 123), Duration.ofSeconds(1));
         
         // Wait for expiration
-        Thread.sleep(200);
+        Thread.sleep(1200);
         
         int threadCount = 10;
         ExecutorService executor = Executors.newFixedThreadPool(threadCount);
