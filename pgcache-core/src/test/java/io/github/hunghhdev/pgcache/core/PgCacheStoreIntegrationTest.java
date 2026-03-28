@@ -8,6 +8,8 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collection;
@@ -19,9 +21,11 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 @Testcontainers
+@SuppressWarnings("resource")
 class PgCacheStoreIntegrationTest {
 
     @Container
+    @SuppressWarnings("resource")
     private static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:15-alpine")
             .withDatabaseName("pgcache_test")
             .withUsername("test")
@@ -207,6 +211,26 @@ class PgCacheStoreIntegrationTest {
         Thread.sleep(2000);
 
         Optional<Object> result = cacheStore.putIfAbsent(key, new TestUser("Replacement", 20));
+
+        assertTrue(result.isEmpty());
+        Optional<TestUser> stored = cacheStore.get(key, TestUser.class);
+        assertTrue(stored.isPresent());
+        assertEquals("Replacement", stored.get().getName());
+        assertEquals(20, stored.get().getAge());
+    }
+
+    @Test
+    void testPutIfAbsentReusesLegacySlidingRowWithNullLastAccessed() throws Exception {
+        String key = "legacy-sliding-put-if-absent-" + UUID.randomUUID();
+
+        insertLegacySlidingRowWithNullLastAccessed(key, "Legacy", 1);
+
+        Optional<Object> result = cacheStore.putIfAbsent(
+                key,
+                new TestUser("Replacement", 20),
+                Duration.ofMinutes(5),
+                TTLPolicy.SLIDING
+        );
 
         assertTrue(result.isEmpty());
         Optional<TestUser> stored = cacheStore.get(key, TestUser.class);
@@ -421,6 +445,24 @@ class PgCacheStoreIntegrationTest {
         // Assert
         assertEquals(0, evicted);
         assertTrue(cacheStore.get("data:1", TestUser.class).isPresent());
+    }
+
+    private void insertLegacySlidingRowWithNullLastAccessed(String key, String value, int ttlSeconds) throws Exception {
+        String sql = "INSERT INTO pgcache_store (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
+                "VALUES (?, ?::jsonb, now() - interval '30 seconds', ?, 'SLIDING', NULL)";
+
+        PGSimpleDataSource dataSource = new PGSimpleDataSource();
+        dataSource.setUrl(postgres.getJdbcUrl());
+        dataSource.setUser(postgres.getUsername());
+        dataSource.setPassword(postgres.getPassword());
+
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, key);
+            statement.setString(2, "\"" + value + "\"");
+            statement.setInt(3, ttlSeconds);
+            statement.executeUpdate();
+        }
     }
 
     static class TestUser {
