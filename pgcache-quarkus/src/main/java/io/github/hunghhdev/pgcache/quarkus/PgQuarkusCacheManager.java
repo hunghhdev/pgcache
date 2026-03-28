@@ -128,6 +128,10 @@ public class PgQuarkusCacheManager implements CacheManager {
             return allowNullValues;
         }
 
+        public boolean isAllowNullValues() {
+            return Boolean.TRUE.equals(allowNullValues);
+        }
+
         public void setAllowNullValues(boolean allowNullValues) {
             this.allowNullValues = allowNullValues;
         }

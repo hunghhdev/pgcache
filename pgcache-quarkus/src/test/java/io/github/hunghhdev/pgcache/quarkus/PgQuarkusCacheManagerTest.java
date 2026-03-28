@@ -10,7 +10,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Duration;
-import java.util.Collections;
 import java.util.Collection;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -20,7 +19,6 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 
@@ -164,5 +162,17 @@ class PgQuarkusCacheManagerTest {
         assertNull(first);
         assertNull(second);
         assertEquals(2, loads.get(), "Per-cache TTL-only config should inherit global allowNullValues=false");
+    }
+
+    @Test
+    void cacheConfig_keepsIsAllowNullValuesCompatibility() {
+        PgQuarkusCacheManager.CacheConfig config = new PgQuarkusCacheManager.CacheConfig();
+
+        assertFalse(config.isAllowNullValues());
+
+        config.setAllowNullValues(true);
+
+        assertEquals(Boolean.TRUE, config.getAllowNullValues());
+        assertTrue(config.isAllowNullValues());
     }
 }
