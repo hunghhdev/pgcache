@@ -51,7 +51,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
      */
     private static final String NOT_EXPIRED_WHERE_CLAUSE =
         "(ttl_seconds IS NULL" +
-        " OR (ttl_policy = 'ABSOLUTE' AND (updated_at + (ttl_seconds * interval '1 second')) > now())" +
+        " OR ((ttl_policy = 'ABSOLUTE' OR ttl_policy IS NULL) AND (updated_at + (ttl_seconds * interval '1 second')) > now())" +
         " OR (ttl_policy = 'SLIDING' AND (last_accessed + (ttl_seconds * interval '1 second')) > now()))";
 
     /**
@@ -60,7 +60,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
      */
     private static final String EXPIRED_WHERE_CLAUSE =
         "(ttl_seconds IS NOT NULL AND (" +
-        "(ttl_policy = 'ABSOLUTE' AND (updated_at + (ttl_seconds * interval '1 second')) <= now()) " +
+        "((ttl_policy = 'ABSOLUTE' OR ttl_policy IS NULL) AND (updated_at + (ttl_seconds * interval '1 second')) <= now()) " +
         "OR (ttl_policy = 'SLIDING' AND (last_accessed + (ttl_seconds * interval '1 second')) <= now())))";
 
     private final DataSource dataSource;

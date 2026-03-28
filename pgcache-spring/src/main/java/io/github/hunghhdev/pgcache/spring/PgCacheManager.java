@@ -90,10 +90,25 @@ public class PgCacheManager implements CacheManager, DisposableBean {
         }
         
         cacheConfigurations.put(cacheName, configuration);
-        
-        // If cache already exists, recreate it with new configuration
+
+        // If cache already exists, remove it (will be recreated on next get)
         Cache existingCache = cacheMap.remove(cacheName);
         if (existingCache != null) {
+            // Decrement usage count for old store
+            StoreConfigurationKey oldStoreKey = cacheToStoreKey.remove(cacheName);
+            if (oldStoreKey != null) {
+                storeUsageCount.computeIfPresent(oldStoreKey, (k, count) -> {
+                    int newCount = count - 1;
+                    if (newCount <= 0) {
+                        PgCacheStore store = storeMap.remove(k);
+                        if (store != null) {
+                            store.close();
+                        }
+                        return null;
+                    }
+                    return newCount;
+                });
+            }
             logger.info("Recreating cache '{}' with new configuration", cacheName);
         }
     }
