@@ -141,6 +141,30 @@ class PgCacheStoreIntegrationTest {
     }
 
     @Test
+    void testPutRejectsSubSecondTtl() {
+        PgCacheException exception = assertThrows(
+                PgCacheException.class,
+                () -> cacheStore.put("sub-second-key-" + UUID.randomUUID(), new TestUser("Fast", 1), Duration.ofMillis(500))
+        );
+
+        assertEquals("TTL must be at least 1 second", exception.getMessage());
+    }
+
+    @Test
+    void testPutRejectsOversizedTtl() {
+        PgCacheException exception = assertThrows(
+                PgCacheException.class,
+                () -> cacheStore.put(
+                        "oversized-ttl-key-" + UUID.randomUUID(),
+                        new TestUser("Large", 2),
+                        Duration.ofSeconds((long) Integer.MAX_VALUE + 1)
+                )
+        );
+
+        assertEquals("TTL exceeds maximum supported value", exception.getMessage());
+    }
+
+    @Test
     void testPutWithoutTTL() {
         // Arrange
         String key = "permanent-key-" + UUID.randomUUID();

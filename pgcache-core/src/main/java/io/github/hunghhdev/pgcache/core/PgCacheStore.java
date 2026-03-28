@@ -255,14 +255,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             valueToStore = NullValueMarker.getInstance();
         }
         
-        if (ttl == null || ttl.isNegative() || ttl.isZero()) {
-            throw new PgCacheException("TTL must be positive");
-        }
         if (policy == null) {
             throw new PgCacheException("TTL policy cannot be null");
         }
 
-        int ttlSeconds = (int) ttl.getSeconds();
+        int ttlSeconds = normalizeTtlSeconds(ttl);
 
         // SQL for upsert (PostgreSQL specific) with sliding TTL support
         String sql = "INSERT INTO " + tableName +
@@ -901,9 +898,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         if (key == null || key.isEmpty()) {
             throw new PgCacheException("Cache key cannot be null or empty");
         }
-        if (newTtl == null || newTtl.isNegative()) {
-            throw new PgCacheException("TTL cannot be null or negative");
-        }
+        int ttlSeconds = normalizeTtlSeconds(newTtl);
 
         // First try to update existing entry (may include permanent entries)
         String sql = "UPDATE " + tableName + 
@@ -913,7 +908,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            stmt.setLong(1, newTtl.getSeconds());
+            stmt.setInt(1, ttlSeconds);
             stmt.setString(2, TTLPolicy.ABSOLUTE.name()); // Default to ABSOLUTE when manually setting TTL
             stmt.setString(3, key);
 
@@ -921,7 +916,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             boolean success = updatedRows > 0;
             
             if (success) {
-                logger.debug("Successfully refreshed TTL for key '{}' to {} seconds", key, newTtl.getSeconds());
+                logger.debug("Successfully refreshed TTL for key '{}' to {} seconds", key, ttlSeconds);
             } else {
                 logger.debug("Failed to refresh TTL for key '{}' - key not found", key);
             }
@@ -948,14 +943,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             valueToStore = NullValueMarker.getInstance();
         }
 
-        if (ttl == null || ttl.isNegative() || ttl.isZero()) {
-            throw new PgCacheException("TTL must be positive");
-        }
         if (policy == null) {
             throw new PgCacheException("TTL policy cannot be null");
         }
 
-        int ttlSeconds = (int) ttl.getSeconds();
+        int ttlSeconds = normalizeTtlSeconds(ttl);
 
         // Atomic insert - only inserts if key doesn't exist
         // Uses ON CONFLICT DO NOTHING to avoid race conditions
@@ -1139,14 +1131,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         if (entries == null || entries.isEmpty()) {
             return;
         }
-        if (ttl == null || ttl.isNegative() || ttl.isZero()) {
-            throw new PgCacheException("TTL must be positive");
-        }
         if (policy == null) {
             throw new PgCacheException("TTL policy cannot be null");
         }
 
-        int ttlSeconds = (int) ttl.getSeconds();
+        int ttlSeconds = normalizeTtlSeconds(ttl);
 
         String sql = "INSERT INTO " + tableName +
                      " (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
@@ -1405,5 +1394,21 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         return "CREATE INDEX IF NOT EXISTS " + tableName + "_sliding_ttl_idx " +
                "ON " + tableName + " (ttl_policy, last_accessed) " +
                "WHERE ttl_policy = 'SLIDING'";
+    }
+
+    private int normalizeTtlSeconds(Duration ttl) {
+        if (ttl == null || ttl.isNegative() || ttl.isZero()) {
+            throw new PgCacheException("TTL must be positive");
+        }
+
+        long ttlSeconds = ttl.getSeconds();
+        if (ttlSeconds <= 0) {
+            throw new PgCacheException("TTL must be at least 1 second");
+        }
+        if (ttlSeconds > Integer.MAX_VALUE) {
+            throw new PgCacheException("TTL exceeds maximum supported value");
+        }
+
+        return (int) ttlSeconds;
     }
 }

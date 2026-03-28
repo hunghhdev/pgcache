@@ -18,6 +18,7 @@ import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.Collection;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -180,6 +181,65 @@ class PgCacheStoreTest {
         // Verify TTL
         verify(preparedStatement).setInt(3, 300); // 5 minutes = 300 seconds
         verify(preparedStatement).executeUpdate();
+    }
+
+    @Test
+    void testPut_WithSubSecondTtl_RejectsZeroSecondConversion() throws Exception {
+        PgCacheException exception = assertThrows(
+                PgCacheException.class,
+                () -> cacheStore.put("test-key", new TestObject("value", 1), Duration.ofMillis(500))
+        );
+
+        assertEquals("TTL must be at least 1 second", exception.getMessage());
+        verify(preparedStatement, never()).executeUpdate();
+    }
+
+    @Test
+    void testPut_WithOversizedTtl_RejectsIntOverflow() throws Exception {
+        PgCacheException exception = assertThrows(
+                PgCacheException.class,
+                () -> cacheStore.put("test-key", new TestObject("value", 1), Duration.ofSeconds((long) Integer.MAX_VALUE + 1))
+        );
+
+        assertEquals("TTL exceeds maximum supported value", exception.getMessage());
+        verify(preparedStatement, never()).executeUpdate();
+    }
+
+    @Test
+    void testPutIfAbsent_WithSubSecondTtl_RejectsZeroSecondConversion() throws Exception {
+        PgCacheException exception = assertThrows(
+                PgCacheException.class,
+                () -> cacheStore.putIfAbsent("test-key", new TestObject("value", 1), Duration.ofMillis(500), TTLPolicy.ABSOLUTE)
+        );
+
+        assertEquals("TTL must be at least 1 second", exception.getMessage());
+        verify(preparedStatement, never()).executeUpdate();
+    }
+
+    @Test
+    void testPutAll_WithOversizedTtl_RejectsIntOverflow() throws Exception {
+        PgCacheException exception = assertThrows(
+                PgCacheException.class,
+                () -> cacheStore.putAll(
+                        Collections.singletonMap("test-key", new TestObject("value", 1)),
+                        Duration.ofSeconds((long) Integer.MAX_VALUE + 1),
+                        TTLPolicy.ABSOLUTE
+                )
+        );
+
+        assertEquals("TTL exceeds maximum supported value", exception.getMessage());
+        verify(preparedStatement, never()).executeBatch();
+    }
+
+    @Test
+    void testRefreshTtl_WithSubSecondTtl_RejectsZeroSecondConversion() throws Exception {
+        PgCacheException exception = assertThrows(
+                PgCacheException.class,
+                () -> cacheStore.refreshTTL("test-key", Duration.ofMillis(500))
+        );
+
+        assertEquals("TTL must be at least 1 second", exception.getMessage());
+        verify(preparedStatement, never()).executeUpdate();
     }
 
     @Test
