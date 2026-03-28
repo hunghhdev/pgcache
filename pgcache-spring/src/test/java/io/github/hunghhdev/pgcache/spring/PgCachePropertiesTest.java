@@ -35,7 +35,7 @@ class PgCachePropertiesTest {
         assertTrue(properties.isEnabled());
         assertEquals(Duration.ofHours(1), properties.getDefaultTtl());
         assertTrue(properties.isAllowNullValues());
-        assertEquals("pgcache_store", properties.getTableName());
+        assertEquals("pg_cache", properties.getTableName());
         assertFalse(properties.getBackgroundCleanup().isEnabled());
         assertEquals(Duration.ofMinutes(30), properties.getBackgroundCleanup().getInterval());
     }
@@ -75,6 +75,12 @@ class PgCachePropertiesTest {
         assertTrue(config2.isBackgroundCleanupEnabled()); // Global default
         assertEquals(Duration.ofMinutes(15), config2.getBackgroundCleanupInterval()); // Global default
         assertEquals(io.github.hunghhdev.pgcache.core.TTLPolicy.SLIDING, config2.getTtlPolicy());
+
+        PgCacheProperties legacyDefaultProperties = new PgCacheProperties();
+        PgCacheProperties.CacheConfig legacyDefaultCache = new PgCacheProperties.CacheConfig();
+
+        PgCacheManager.PgCacheConfiguration legacyDefaultConfig = legacyDefaultCache.toConfiguration(legacyDefaultProperties);
+        assertEquals("pg_cache", legacyDefaultConfig.getTableName());
     }
     
     @Test

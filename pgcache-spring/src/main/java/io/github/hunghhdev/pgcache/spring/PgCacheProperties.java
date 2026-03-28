@@ -32,7 +32,7 @@ public class PgCacheProperties {
     /**
      * Default table name for cache storage.
      */
-    private String tableName = "pgcache_store";
+    private String tableName = "pg_cache";
     
     /**
      * Background cleanup configuration.

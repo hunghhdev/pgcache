@@ -27,6 +27,7 @@ import java.util.function.Consumer;
 public class PgCacheManager implements CacheManager, DisposableBean {
     
     private static final Logger logger = LoggerFactory.getLogger(PgCacheManager.class);
+    private static final String DEFAULT_TABLE_NAME = "pg_cache";
     
     private final DataSource dataSource;
     private final PgCacheConfiguration defaultConfiguration;
@@ -310,11 +311,11 @@ public class PgCacheManager implements CacheManager, DisposableBean {
         private final TTLPolicy ttlPolicy;
         
         public PgCacheConfiguration(Duration defaultTtl, boolean allowNullValues, String tableName,
-                                  boolean backgroundCleanupEnabled, Duration backgroundCleanupInterval,
-                                  TTLPolicy ttlPolicy) {
+                                   boolean backgroundCleanupEnabled, Duration backgroundCleanupInterval,
+                                   TTLPolicy ttlPolicy) {
             this.defaultTtl = defaultTtl;
             this.allowNullValues = allowNullValues;
-            this.tableName = tableName != null ? tableName : "pgcache_store";
+            this.tableName = tableName != null ? tableName : DEFAULT_TABLE_NAME;
             this.backgroundCleanupEnabled = backgroundCleanupEnabled;
             this.backgroundCleanupInterval = backgroundCleanupInterval;
             this.ttlPolicy = ttlPolicy != null ? ttlPolicy : TTLPolicy.ABSOLUTE;
@@ -357,7 +358,7 @@ public class PgCacheManager implements CacheManager, DisposableBean {
         public static class Builder {
             private Duration defaultTtl = Duration.ofHours(1); // 1 hour default
             private boolean allowNullValues = true;
-            private String tableName = "pgcache_store";
+            private String tableName = DEFAULT_TABLE_NAME;
             private boolean backgroundCleanupEnabled = false;
             private Duration backgroundCleanupInterval = Duration.ofMinutes(30);
             private TTLPolicy ttlPolicy = TTLPolicy.ABSOLUTE;
