@@ -938,35 +938,47 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
         int ttlSeconds = normalizeTtlSeconds(ttl);
 
-        // Atomic insert - only inserts if key doesn't exist
-        // Uses ON CONFLICT DO NOTHING to avoid race conditions
-        String insertSql = "INSERT INTO " + tableName +
+        try (Connection conn = getValidatedConnection()) {
+            // First, delete expired entry for this key if it exists
+            // This prevents blocking by expired rows
+            String deleteExpiredSql = "DELETE FROM " + tableName +
+                     " WHERE key = ? AND (" + EXPIRED_WHERE_CLAUSE + ")";
+            try (PreparedStatement deleteStmt = conn.prepareStatement(deleteExpiredSql)) {
+                deleteStmt.setString(1, key);
+                int deletedExpired = deleteStmt.executeUpdate();
+                if (deletedExpired > 0) {
+                    invalidateSizeCache();
+                }
+            }
+
+            // Atomic insert - only inserts if key doesn't exist
+            // Uses ON CONFLICT DO NOTHING to avoid race conditions
+            String insertSql = "INSERT INTO " + tableName +
                      " (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
                      "VALUES (?, ?::jsonb, now(), ?, ?, now()) " +
                      "ON CONFLICT (key) DO NOTHING";
 
-        try (Connection conn = getValidatedConnection();
-             PreparedStatement stmt = conn.prepareStatement(insertSql)) {
+            try (PreparedStatement stmt = conn.prepareStatement(insertSql)) {
+                String jsonValue = objectMapper.writeValueAsString(valueToStore);
 
-            String jsonValue = objectMapper.writeValueAsString(valueToStore);
+                stmt.setString(1, key);
+                stmt.setString(2, jsonValue);
+                stmt.setInt(3, ttlSeconds);
+                stmt.setString(4, policy.name());
 
-            stmt.setString(1, key);
-            stmt.setString(2, jsonValue);
-            stmt.setInt(3, ttlSeconds);
-            stmt.setString(4, policy.name());
+                int inserted = stmt.executeUpdate();
 
-            int inserted = stmt.executeUpdate();
-
-            if (inserted > 0) {
-                // Successfully inserted - key was not present
-                putCount.incrementAndGet();
-                invalidateSizeCache();
-                return Optional.empty();
-            } else {
-                // Key already exists - return the existing value
-                return get(key, Object.class, false);
+                if (inserted > 0) {
+                    // Successfully inserted - key was not present
+                    putCount.incrementAndGet();
+                    invalidateSizeCache();
+                    fireOnPut(key, value);
+                    return Optional.empty();
+                } else {
+                    // Key already exists and is not expired - return the existing value
+                    return get(key, Object.class, false);
+                }
             }
-
         } catch (Exception e) {
             throw new PgCacheException("Failed to putIfAbsent value in cache", e);
         }

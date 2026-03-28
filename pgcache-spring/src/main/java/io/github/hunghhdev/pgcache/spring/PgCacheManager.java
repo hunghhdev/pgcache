@@ -33,6 +33,8 @@ public class PgCacheManager implements CacheManager, DisposableBean {
     private final ConcurrentMap<String, Cache> cacheMap = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, PgCacheConfiguration> cacheConfigurations = new ConcurrentHashMap<>();
     private final ConcurrentMap<StoreConfigurationKey, PgCacheStore> storeMap = new ConcurrentHashMap<>();
+    private final ConcurrentMap<StoreConfigurationKey, Integer> storeUsageCount = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, StoreConfigurationKey> cacheToStoreKey = new ConcurrentHashMap<>();
     private final List<CacheEventListener> eventListeners;
     private final List<Consumer<PgCache>> cacheCreatedListeners = new CopyOnWriteArrayList<>();
     
@@ -106,12 +108,27 @@ public class PgCacheManager implements CacheManager, DisposableBean {
         if (cacheName == null) {
             return false;
         }
-        
+
         Cache removed = cacheMap.remove(cacheName);
         cacheConfigurations.remove(cacheName);
-        
+
+        StoreConfigurationKey storeKey = cacheToStoreKey.remove(cacheName);
+        if (storeKey != null) {
+            storeUsageCount.computeIfPresent(storeKey, (k, count) -> {
+                int newCount = count - 1;
+                if (newCount <= 0) {
+                    PgCacheStore store = storeMap.remove(k);
+                    if (store != null) {
+                        store.close();
+                        logger.debug("Closed and removed store for key: {}", k);
+                    }
+                    return null;
+                }
+                return newCount;
+            });
+        }
+
         if (removed != null) {
-            // Clear the cache before removal
             try {
                 removed.clear();
                 logger.info("Removed and cleared cache '{}'", cacheName);
@@ -120,7 +137,7 @@ public class PgCacheManager implements CacheManager, DisposableBean {
                 logger.warn("Failed to clear cache '{}' during removal: {}", cacheName, e.getMessage());
             }
         }
-        
+
         return false;
     }
     
@@ -182,21 +199,24 @@ public class PgCacheManager implements CacheManager, DisposableBean {
      */
     private Cache createCache(String name) {
         PgCacheConfiguration config = cacheConfigurations.getOrDefault(name, defaultConfiguration);
-        
-        logger.info("Creating new cache '{}' with TTL: {}, Allow null values: {}, Background cleanup: {}", 
+
+        logger.info("Creating new cache '{}' with TTL: {}, Allow null values: {}, Background cleanup: {}",
                    name, config.getDefaultTtl(), config.isAllowNullValues(), config.isBackgroundCleanupEnabled());
-        
+
         try {
+            StoreConfigurationKey storeKey = StoreConfigurationKey.from(config);
             PgCacheStore cacheStore = storeMap.computeIfAbsent(
-                    StoreConfigurationKey.from(config),
+                    storeKey,
                     key -> createCacheStore(config)
             );
-            
-            // Create the Spring Cache wrapper
+
+            storeUsageCount.merge(storeKey, 1, Integer::sum);
+            cacheToStoreKey.put(name, storeKey);
+
             PgCache cache = new PgCache(name, cacheStore, config.getDefaultTtl(), config.isAllowNullValues(), config.getTtlPolicy());
             cacheCreatedListeners.forEach(listener -> listener.accept(cache));
             return cache;
-            
+
         } catch (Exception e) {
             logger.error("Failed to create cache '{}': {}", name, e.getMessage());
             throw new RuntimeException("Failed to create cache: " + name, e);
