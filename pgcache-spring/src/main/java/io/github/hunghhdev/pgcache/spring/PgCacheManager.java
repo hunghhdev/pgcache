@@ -13,8 +13,11 @@ import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.Consumer;
 
 /**
  * Spring CacheManager implementation that manages PgCache instances.
@@ -28,7 +31,9 @@ public class PgCacheManager implements CacheManager {
     private final PgCacheConfiguration defaultConfiguration;
     private final ConcurrentMap<String, Cache> cacheMap = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, PgCacheConfiguration> cacheConfigurations = new ConcurrentHashMap<>();
+    private final ConcurrentMap<StoreConfigurationKey, PgCacheStore> storeMap = new ConcurrentHashMap<>();
     private final List<CacheEventListener> eventListeners;
+    private final List<Consumer<PgCache>> cacheCreatedListeners = new CopyOnWriteArrayList<>();
     
     /**
      * Create a new PgCacheManager with default configuration.
@@ -157,6 +162,12 @@ public class PgCacheManager implements CacheManager {
             }
         }
     }
+
+    public void addCacheCreatedListener(Consumer<PgCache> listener) {
+        if (listener != null) {
+            cacheCreatedListeners.add(listener);
+        }
+    }
     
     /**
      * Create a new cache instance with the appropriate configuration.
@@ -168,30 +179,79 @@ public class PgCacheManager implements CacheManager {
                    name, config.getDefaultTtl(), config.isAllowNullValues(), config.isBackgroundCleanupEnabled());
         
         try {
-            // Create the underlying cache store
-            PgCacheStore.Builder builder = PgCacheStore.builder()
-                    .dataSource(dataSource)
-                    .autoCreateTable(true)
-                    .tableName(config.getTableName())
-                    .allowNullValues(config.isAllowNullValues());
-            
-            // Configure background cleanup if enabled
-            if (config.isBackgroundCleanupEnabled() && config.getBackgroundCleanupInterval() != null) {
-                builder.enableBackgroundCleanup(true)
-                       .cleanupIntervalMinutes(config.getBackgroundCleanupInterval().toMinutes());
-            }
-
-            // Register listeners
-            eventListeners.forEach(builder::addEventListener);
-            
-            PgCacheStore cacheStore = builder.build();
+            PgCacheStore cacheStore = storeMap.computeIfAbsent(
+                    StoreConfigurationKey.from(config),
+                    key -> createCacheStore(config)
+            );
             
             // Create the Spring Cache wrapper
-            return new PgCache(name, cacheStore, config.getDefaultTtl(), config.isAllowNullValues(), config.getTtlPolicy());
+            PgCache cache = new PgCache(name, cacheStore, config.getDefaultTtl(), config.isAllowNullValues(), config.getTtlPolicy());
+            cacheCreatedListeners.forEach(listener -> listener.accept(cache));
+            return cache;
             
         } catch (Exception e) {
             logger.error("Failed to create cache '{}': {}", name, e.getMessage());
             throw new RuntimeException("Failed to create cache: " + name, e);
+        }
+    }
+
+    private PgCacheStore createCacheStore(PgCacheConfiguration config) {
+        PgCacheStore.Builder builder = PgCacheStore.builder()
+                .dataSource(dataSource)
+                .autoCreateTable(true)
+                .tableName(config.getTableName())
+                .allowNullValues(config.isAllowNullValues());
+
+        if (config.isBackgroundCleanupEnabled() && config.getBackgroundCleanupInterval() != null) {
+            builder.enableBackgroundCleanup(true)
+                   .cleanupIntervalMinutes(config.getBackgroundCleanupInterval().toMinutes());
+        }
+
+        eventListeners.forEach(builder::addEventListener);
+        return builder.build();
+    }
+
+    private static final class StoreConfigurationKey {
+        private final boolean allowNullValues;
+        private final String tableName;
+        private final boolean backgroundCleanupEnabled;
+        private final Duration backgroundCleanupInterval;
+
+        private StoreConfigurationKey(boolean allowNullValues, String tableName,
+                                      boolean backgroundCleanupEnabled, Duration backgroundCleanupInterval) {
+            this.allowNullValues = allowNullValues;
+            this.tableName = tableName;
+            this.backgroundCleanupEnabled = backgroundCleanupEnabled;
+            this.backgroundCleanupInterval = backgroundCleanupInterval;
+        }
+
+        static StoreConfigurationKey from(PgCacheConfiguration configuration) {
+            return new StoreConfigurationKey(
+                    configuration.isAllowNullValues(),
+                    configuration.getTableName(),
+                    configuration.isBackgroundCleanupEnabled(),
+                    configuration.getBackgroundCleanupInterval()
+            );
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (!(o instanceof StoreConfigurationKey)) {
+                return false;
+            }
+            StoreConfigurationKey that = (StoreConfigurationKey) o;
+            return allowNullValues == that.allowNullValues
+                    && backgroundCleanupEnabled == that.backgroundCleanupEnabled
+                    && Objects.equals(tableName, that.tableName)
+                    && Objects.equals(backgroundCleanupInterval, that.backgroundCleanupInterval);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(allowNullValues, tableName, backgroundCleanupEnabled, backgroundCleanupInterval);
         }
     }
     
@@ -211,7 +271,7 @@ public class PgCacheManager implements CacheManager {
                                   TTLPolicy ttlPolicy) {
             this.defaultTtl = defaultTtl;
             this.allowNullValues = allowNullValues;
-            this.tableName = tableName != null ? tableName : "pg_cache";
+            this.tableName = tableName != null ? tableName : "pgcache_store";
             this.backgroundCleanupEnabled = backgroundCleanupEnabled;
             this.backgroundCleanupInterval = backgroundCleanupInterval;
             this.ttlPolicy = ttlPolicy != null ? ttlPolicy : TTLPolicy.ABSOLUTE;
@@ -254,7 +314,7 @@ public class PgCacheManager implements CacheManager {
         public static class Builder {
             private Duration defaultTtl = Duration.ofHours(1); // 1 hour default
             private boolean allowNullValues = true;
-            private String tableName = "pg_cache";
+            private String tableName = "pgcache_store";
             private boolean backgroundCleanupEnabled = false;
             private Duration backgroundCleanupInterval = Duration.ofMinutes(30);
             private TTLPolicy ttlPolicy = TTLPolicy.ABSOLUTE;

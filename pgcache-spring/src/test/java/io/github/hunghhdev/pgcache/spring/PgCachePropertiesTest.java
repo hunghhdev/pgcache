@@ -35,7 +35,7 @@ class PgCachePropertiesTest {
         assertTrue(properties.isEnabled());
         assertEquals(Duration.ofHours(1), properties.getDefaultTtl());
         assertTrue(properties.isAllowNullValues());
-        assertEquals("pg_cache", properties.getTableName());
+        assertEquals("pgcache_store", properties.getTableName());
         assertFalse(properties.getBackgroundCleanup().isEnabled());
         assertEquals(Duration.ofMinutes(30), properties.getBackgroundCleanup().getInterval());
     }

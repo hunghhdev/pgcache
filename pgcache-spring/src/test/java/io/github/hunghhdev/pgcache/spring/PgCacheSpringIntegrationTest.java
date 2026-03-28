@@ -286,6 +286,36 @@ class PgCacheSpringIntegrationTest {
             assertFalse(defaultStoreTableExists, "Default hard-coded table should not be created when custom tableName is configured");
         }
     }
+
+    @Test
+    void testCachesWithSameStoreConfig_shareNativeStore() {
+        PgCache cache1 = (PgCache) cacheManager.getCache("shared-store-1");
+        PgCache cache2 = (PgCache) cacheManager.getCache("shared-store-2");
+
+        assertSame(cache1.getNativeCache(), cache2.getNativeCache(),
+                "Caches with identical store-level configuration should share the same PgCacheStore instance");
+    }
+
+    @Test
+    void testCachesWithDifferentTableNames_useDifferentNativeStores() {
+        PgCacheManager manager = (PgCacheManager) cacheManager;
+        manager.setCacheConfiguration("table-a", PgCacheManager.PgCacheConfiguration.builder()
+                .defaultTtl(Duration.ofMinutes(5))
+                .allowNullValues(true)
+                .tableName("table_a")
+                .build());
+        manager.setCacheConfiguration("table-b", PgCacheManager.PgCacheConfiguration.builder()
+                .defaultTtl(Duration.ofMinutes(5))
+                .allowNullValues(true)
+                .tableName("table_b")
+                .build());
+
+        PgCache cache1 = (PgCache) manager.getCache("table-a");
+        PgCache cache2 = (PgCache) manager.getCache("table-b");
+
+        assertNotSame(cache1.getNativeCache(), cache2.getNativeCache(),
+                "Different table names still require separate PgCacheStore instances");
+    }
     
     @Test
     void testGetWithValueLoader() {
@@ -356,6 +386,20 @@ class PgCacheSpringIntegrationTest {
 
         assertEquals(1.0, registry.find("pgcache.size").tag("cache", "metric-cache-1").gauge().value());
         assertEquals(1.0, registry.find("pgcache.size").tag("cache", "metric-cache-2").gauge().value());
+    }
+
+    @Test
+    void testMicrometerBinder_registersCachesCreatedAfterBinding() {
+        PgCacheManager manager = (PgCacheManager) cacheManager;
+        MeterRegistry registry = new SimpleMeterRegistry();
+
+        new PgCacheMetricsAutoConfiguration().pgCacheMetricsBinder(manager).bindTo(registry);
+
+        PgCache cache = (PgCache) manager.getCache("late-metric-cache");
+        cache.put("key1", "value1");
+
+        assertNotNull(registry.find("pgcache.size").tag("cache", "late-metric-cache").gauge(),
+                "Caches created after metrics binding should still be registered");
     }
 
     @Test

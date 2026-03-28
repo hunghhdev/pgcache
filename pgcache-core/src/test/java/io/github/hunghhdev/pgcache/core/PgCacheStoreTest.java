@@ -131,29 +131,15 @@ class PgCacheStoreTest {
     void testGet_WhenKeyIsExpired() throws Exception {
         // Arrange
         String key = "expired-key";
-        TestObject expectedObject = new TestObject("expired-value", 456);
-        String jsonValue = realObjectMapper.writeValueAsString(expectedObject);
 
         when(preparedStatement.executeQuery()).thenReturn(resultSet);
-        when(resultSet.next()).thenReturn(true);
-        when(resultSet.getString("value")).thenReturn(jsonValue);
-        when(resultSet.getTimestamp("updated_at")).thenReturn(
-            Timestamp.from(Instant.now().minusSeconds(120)));
-        when(resultSet.getObject("ttl_seconds", Integer.class)).thenReturn(60);
-
-        // Create a second prepared statement for the evict call
-        PreparedStatement evictStatement = mock(PreparedStatement.class);
-        when(connection.prepareStatement(contains("DELETE"))).thenReturn(evictStatement);
+        when(resultSet.next()).thenReturn(false);
 
         // Act
         Optional<TestObject> result = cacheStore.get(key, TestObject.class);
 
         // Assert
         assertFalse(result.isPresent());
-
-        // Verify evict was called
-        verify(evictStatement).setString(1, key);
-        verify(evictStatement).executeUpdate();
     }
 
     @Test

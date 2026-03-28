@@ -424,6 +424,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             int deletedCount = stmt.executeUpdate(sql);
             
             if (deletedCount > 0) {
+                evictionCount.addAndGet(deletedCount);
                 logger.info("Cleaned up {} expired cache entries", deletedCount);
                 invalidateSizeCache(); // Invalidate size cache if entries were removed
             } else {
@@ -695,7 +696,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
 
         String sql = "SELECT value, updated_at, ttl_seconds, ttl_policy, last_accessed FROM " + tableName +
-                     " WHERE key = ?";
+                     " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE;
 
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -732,16 +733,6 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                     } catch (IllegalArgumentException e) {
                         logger.warn("Invalid TTL policy '{}' for key '{}', defaulting to ABSOLUTE", ttlPolicyStr, key);
                     }
-                }
-
-                if (TtlHelper.isExpired(updatedAt, lastAccessed, ttlSeconds, ttlPolicy)) {
-                    try {
-                        evict(key);
-                    } catch (Exception evictException) {
-                        logger.warn("Failed to evict expired key '{}', continuing with empty result", key, evictException);
-                    }
-                    missCount.incrementAndGet();
-                    return Optional.empty();
                 }
 
                 // Update last_accessed timestamp for sliding TTL if refreshTTL is true
@@ -1047,7 +1038,8 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         for (int i = 0; i < keyList.size(); i++) {
             sql.append(i > 0 ? ", ?" : "?");
         }
-        sql.append(")");
+        sql.append(") AND ");
+        sql.append(NOT_EXPIRED_WHERE_CLAUSE);
 
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
@@ -1077,10 +1069,6 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                         } catch (IllegalArgumentException e) {
                             // Default to ABSOLUTE
                         }
-                    }
-
-                    if (TtlHelper.isExpired(updatedAt, lastAccessed, ttlSeconds, ttlPolicy)) {
-                        continue;
                     }
 
                     // Deserialize value

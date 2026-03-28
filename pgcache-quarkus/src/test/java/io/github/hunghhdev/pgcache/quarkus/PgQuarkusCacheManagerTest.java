@@ -10,12 +10,19 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Duration;
+import java.util.Collections;
 import java.util.Collection;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
 
 /**
  * Unit tests for PgQuarkusCacheManager.
@@ -122,5 +129,40 @@ class PgQuarkusCacheManagerTest {
         assertNotNull(cache);
         // The cache is created with custom config - verify it's a PgQuarkusCache
         assertEquals("customCache", cache.getName());
+    }
+
+    @Test
+    void cacheConfig_withoutAllowNullOverride_inheritsGlobalFalse() {
+        when(cacheStore.getAsync(anyString(), any())).thenReturn(CompletableFuture.completedFuture(Optional.empty()));
+
+        Map<String, PgQuarkusCacheManager.CacheConfig> configs = new HashMap<>();
+        PgQuarkusCacheManager.CacheConfig config = new PgQuarkusCacheManager.CacheConfig();
+        config.setTtl(Duration.ofMinutes(30));
+        configs.put("customCache", config);
+
+        PgQuarkusCacheManager customManager = new PgQuarkusCacheManager(
+            cacheStore,
+            Duration.ofHours(1),
+            false,
+            TTLPolicy.ABSOLUTE,
+            configs
+        );
+
+        PgQuarkusCache cache = customManager.getOrCreateCache("customCache");
+        AtomicInteger loads = new AtomicInteger(0);
+
+        String first = cache.<String, String>get("null-key", k -> {
+            loads.incrementAndGet();
+            return null;
+        }).await().indefinitely();
+
+        String second = cache.<String, String>get("null-key", k -> {
+            loads.incrementAndGet();
+            return null;
+        }).await().indefinitely();
+
+        assertNull(first);
+        assertNull(second);
+        assertEquals(2, loads.get(), "Per-cache TTL-only config should inherit global allowNullValues=false");
     }
 }

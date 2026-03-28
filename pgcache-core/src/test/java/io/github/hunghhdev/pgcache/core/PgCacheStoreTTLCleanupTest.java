@@ -254,4 +254,24 @@ class PgCacheStoreTTLCleanupTest {
         // Size should reflect only permanent entries
         assertEquals(2, cache.size());
     }
+
+    @Test
+    void testCleanupExpiredUpdatesEvictionStatistics() {
+        cache.put("expired1", "value1", Duration.ofSeconds(1));
+        cache.put("expired2", "value2", Duration.ofSeconds(1));
+        cache.put("permanent", "value3");
+
+        try {
+            Thread.sleep(2000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            fail("Test interrupted");
+        }
+
+        int cleanedUp = cache.cleanupExpired();
+        CacheStatistics statistics = cache.getStatistics();
+
+        assertEquals(2, cleanedUp);
+        assertEquals(2, statistics.getEvictionCount(), "cleanupExpired should contribute to eviction statistics");
+    }
 }

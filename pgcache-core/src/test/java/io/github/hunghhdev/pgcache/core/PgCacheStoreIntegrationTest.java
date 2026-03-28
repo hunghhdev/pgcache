@@ -254,6 +254,19 @@ class PgCacheStoreIntegrationTest {
     }
 
     @Test
+    void testGetAndGetAll_useSameExpiryRulesAsContainsKey() throws Exception {
+        String key = "expiry-consistency-" + UUID.randomUUID();
+        TestUser user = new TestUser("Consistency", 42);
+
+        cacheStore.put(key, user, Duration.ofSeconds(1));
+        Thread.sleep(2000);
+
+        assertFalse(cacheStore.containsKey(key));
+        assertFalse(cacheStore.get(key, TestUser.class).isPresent());
+        assertTrue(cacheStore.getAll(java.util.Collections.singletonList(key), TestUser.class).isEmpty());
+    }
+
+    @Test
     void testPutAll() {
         // Arrange
         Map<String, TestUser> entries = new HashMap<>();

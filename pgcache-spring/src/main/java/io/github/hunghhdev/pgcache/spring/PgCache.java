@@ -76,8 +76,13 @@ public class PgCache implements Cache {
 
             return new SimpleValueWrapper(value);
         } catch (Exception e) {
+            if (e instanceof IllegalArgumentException) {
+                logger.warn("Failed to get value from cache '{}' for key '{}': {}", name, key, e.getMessage());
+                return null;
+            }
+
             logger.warn("Failed to get value from cache '{}' for key '{}': {}", name, key, e.getMessage());
-            return null;
+            throw new RuntimeException("Cache get operation failed", e);
         }
     }
     
@@ -102,9 +107,15 @@ public class PgCache implements Cache {
 
             return value;
         } catch (Exception e) {
+            if (type == null) {
+                logger.warn("Failed to get value from cache '{}' for key '{}' with type {}: {}",
+                           name, key, safeTypeName(type), e.getMessage());
+                return null;
+            }
+
             logger.warn("Failed to get value from cache '{}' for key '{}' with type {}: {}",
                        name, key, safeTypeName(type), e.getMessage());
-            return null;
+            throw new RuntimeException("Cache get operation failed", e);
         }
     }
     
