@@ -538,7 +538,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             if (tableName == null || tableName.trim().isEmpty()) {
                 throw new IllegalArgumentException("tableName cannot be null or empty");
             }
-            this.tableName = tableName.trim();
+            String trimmed = tableName.trim();
+            if (!trimmed.matches("^[a-zA-Z_][a-zA-Z0-9_]*$")) {
+                throw new IllegalArgumentException("tableName must be a valid SQL identifier (letters, digits, underscores only)");
+            }
+            this.tableName = trimmed;
             return this;
         }
 
@@ -782,7 +786,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             stmt.executeUpdate();
 
         } catch (SQLException e) {
-            logger.warn("Failed to update last_accessed timestamp for key '{}'", key, e);
+            logger.warn("Failed to update last_accessed timestamp for key '{}': {}", key, e.getMessage());
         }
     }
 
