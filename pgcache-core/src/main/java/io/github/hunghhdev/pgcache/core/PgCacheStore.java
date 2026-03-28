@@ -902,15 +902,14 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
         // First try to update existing entry (may include permanent entries)
         String sql = "UPDATE " + tableName + 
-                     " SET ttl_seconds = ?, ttl_policy = ?, updated_at = CURRENT_TIMESTAMP, last_accessed = CURRENT_TIMESTAMP " +
+                     " SET ttl_seconds = ?, updated_at = CURRENT_TIMESTAMP, last_accessed = CURRENT_TIMESTAMP " +
                      " WHERE key = ?";
 
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
             stmt.setInt(1, ttlSeconds);
-            stmt.setString(2, TTLPolicy.ABSOLUTE.name()); // Default to ABSOLUTE when manually setting TTL
-            stmt.setString(3, key);
+            stmt.setString(2, key);
 
             int updatedRows = stmt.executeUpdate();
             boolean success = updatedRows > 0;
