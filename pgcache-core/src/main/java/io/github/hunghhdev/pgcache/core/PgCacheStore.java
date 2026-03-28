@@ -1000,31 +1000,36 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
 
         // Atomic insert for permanent entry
-        String insertSql = "INSERT INTO " + tableName +
-                     " (key, value, updated_at, ttl_seconds) " +
-                     "VALUES (?, ?::jsonb, now(), NULL) " +
-                     "ON CONFLICT (key) DO NOTHING";
-
-        try (Connection conn = getValidatedConnection();
-             PreparedStatement stmt = conn.prepareStatement(insertSql)) {
-
-            String jsonValue = objectMapper.writeValueAsString(valueToStore);
-
-            stmt.setString(1, key);
-            stmt.setString(2, jsonValue);
-
-            int inserted = stmt.executeUpdate();
-
-            if (inserted > 0) {
-                // Successfully inserted - key was not present
-                putCount.incrementAndGet();
-                invalidateSizeCache();
-                return Optional.empty();
-            } else {
-                // Key already exists - return the existing value
-                return get(key, Object.class, false);
+        try (Connection conn = getValidatedConnection()) {
+            String deleteExpiredSql = "DELETE FROM " + tableName +
+                    " WHERE key = ? AND (" + EXPIRED_WHERE_CLAUSE + ")";
+            try (PreparedStatement deleteStmt = conn.prepareStatement(deleteExpiredSql)) {
+                deleteStmt.setString(1, key);
+                if (deleteStmt.executeUpdate() > 0) {
+                    invalidateSizeCache();
+                }
             }
 
+            String insertSql = "INSERT INTO " + tableName +
+                    " (key, value, updated_at, ttl_seconds) " +
+                    "VALUES (?, ?::jsonb, now(), NULL) " +
+                    "ON CONFLICT (key) DO NOTHING";
+            try (PreparedStatement stmt = conn.prepareStatement(insertSql)) {
+                String jsonValue = objectMapper.writeValueAsString(valueToStore);
+
+                stmt.setString(1, key);
+                stmt.setString(2, jsonValue);
+
+                int inserted = stmt.executeUpdate();
+
+                if (inserted > 0) {
+                    putCount.incrementAndGet();
+                    invalidateSizeCache();
+                    return Optional.empty();
+                }
+
+                return get(key, Object.class, false);
+            }
         } catch (Exception e) {
             throw new PgCacheException("Failed to putIfAbsent value in cache", e);
         }

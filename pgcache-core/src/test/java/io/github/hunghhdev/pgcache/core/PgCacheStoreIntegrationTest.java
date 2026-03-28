@@ -200,6 +200,22 @@ class PgCacheStoreIntegrationTest {
     }
 
     @Test
+    void testPutIfAbsentPermanentReplacesExpiredEntry() throws InterruptedException {
+        String key = "expired-put-if-absent-" + UUID.randomUUID();
+
+        cacheStore.put(key, new TestUser("Expired", 10), Duration.ofSeconds(1));
+        Thread.sleep(2000);
+
+        Optional<Object> result = cacheStore.putIfAbsent(key, new TestUser("Replacement", 20));
+
+        assertTrue(result.isEmpty());
+        Optional<TestUser> stored = cacheStore.get(key, TestUser.class);
+        assertTrue(stored.isPresent());
+        assertEquals("Replacement", stored.get().getName());
+        assertEquals(20, stored.get().getAge());
+    }
+
+    @Test
     void testSizeCountsPermanentEntries() {
         // Arrange
         String tempKey = "temp-key-" + UUID.randomUUID();
