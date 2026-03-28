@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Disposes;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Inject;
 import javax.sql.DataSource;
@@ -79,5 +80,11 @@ public class PgQuarkusCacheProducer {
             config.parseTtlPolicy(),
             cacheConfigs
         );
+    }
+
+    void dispose(@Disposes PgCacheStore cacheStore) {
+        logger.info("Disposing PgCacheStore");
+        cacheStore.close();
+        logger.info("PgCacheStore disposed");
     }
 }

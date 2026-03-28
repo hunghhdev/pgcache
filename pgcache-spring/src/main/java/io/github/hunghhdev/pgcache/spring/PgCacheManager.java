@@ -5,6 +5,7 @@ import io.github.hunghhdev.pgcache.core.PgCacheStore;
 import io.github.hunghhdev.pgcache.core.TTLPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
 
@@ -23,7 +24,7 @@ import java.util.function.Consumer;
  * Spring CacheManager implementation that manages PgCache instances.
  * Supports dynamic cache creation and configuration per cache name.
  */
-public class PgCacheManager implements CacheManager {
+public class PgCacheManager implements CacheManager, DisposableBean {
     
     private static final Logger logger = LoggerFactory.getLogger(PgCacheManager.class);
     
@@ -128,7 +129,7 @@ public class PgCacheManager implements CacheManager {
      */
     public void clearAll() {
         logger.info("Clearing all {} caches", cacheMap.size());
-        
+
         for (Cache cache : cacheMap.values()) {
             try {
                 cache.clear();
@@ -136,6 +137,13 @@ public class PgCacheManager implements CacheManager {
                 logger.warn("Failed to clear cache '{}': {}", cache.getName(), e.getMessage());
             }
         }
+    }
+
+    @Override
+    public void destroy() {
+        logger.info("Shutting down PgCacheManager");
+        storeMap.values().forEach(PgCacheStore::close);
+        logger.info("PgCacheManager shutdown completed");
     }
     
     /**

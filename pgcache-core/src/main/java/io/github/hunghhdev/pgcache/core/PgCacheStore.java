@@ -711,10 +711,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
                 // Get the values
                 String jsonValue = rs.getString("value");
-                Instant updatedAt = rs.getTimestamp("updated_at").toInstant();
+                java.sql.Timestamp updatedAtTimestamp = rs.getTimestamp("updated_at");
+                Instant updatedAt = updatedAtTimestamp != null ? updatedAtTimestamp.toInstant() : Instant.now();
                 Integer ttlSeconds = rs.getObject("ttl_seconds", Integer.class);
                 String ttlPolicyStr = rs.getString("ttl_policy");
-                
+
                 // Handle null last_accessed for backward compatibility
                 Instant lastAccessed = null;
                 java.sql.Timestamp lastAccessedTimestamp = rs.getTimestamp("last_accessed");
@@ -806,21 +807,15 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
                 Integer ttlSeconds = rs.getObject("ttl_seconds", Integer.class);
                 if (ttlSeconds == null) {
-                    return Optional.empty(); // No TTL set
+                    return Optional.empty();
                 }
 
-                Instant updatedAt = rs.getTimestamp("updated_at").toInstant();
+                java.sql.Timestamp updatedAtTimestamp = rs.getTimestamp("updated_at");
+                Instant updatedAt = updatedAtTimestamp != null ? updatedAtTimestamp.toInstant() : Instant.now();
                 String ttlPolicyStr = rs.getString("ttl_policy");
-                
-                // Handle null last_accessed for backward compatibility
-                Instant lastAccessed = null;
+
                 java.sql.Timestamp lastAccessedTimestamp = rs.getTimestamp("last_accessed");
-                if (lastAccessedTimestamp != null) {
-                    lastAccessed = lastAccessedTimestamp.toInstant();
-                } else {
-                    // For backward compatibility, use updated_at if last_accessed is null
-                    lastAccessed = updatedAt;
-                }
+                Instant lastAccessed = lastAccessedTimestamp != null ? lastAccessedTimestamp.toInstant() : updatedAt;
 
                 // Parse TTL policy
                 TTLPolicy ttlPolicy = TTLPolicy.ABSOLUTE;
@@ -1052,15 +1047,13 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 while (rs.next()) {
                     String key = rs.getString("key");
                     String jsonValue = rs.getString("value");
-                    Instant updatedAt = rs.getTimestamp("updated_at").toInstant();
+                    java.sql.Timestamp updatedAtTimestamp = rs.getTimestamp("updated_at");
+                    Instant updatedAt = updatedAtTimestamp != null ? updatedAtTimestamp.toInstant() : Instant.now();
                     Integer ttlSeconds = rs.getObject("ttl_seconds", Integer.class);
                     String ttlPolicyStr = rs.getString("ttl_policy");
 
-                    Instant lastAccessed = updatedAt;
                     java.sql.Timestamp lastAccessedTs = rs.getTimestamp("last_accessed");
-                    if (lastAccessedTs != null) {
-                        lastAccessed = lastAccessedTs.toInstant();
-                    }
+                    Instant lastAccessed = lastAccessedTs != null ? lastAccessedTs.toInstant() : updatedAt;
 
                     TTLPolicy ttlPolicy = TTLPolicy.ABSOLUTE;
                     if (ttlPolicyStr != null) {
