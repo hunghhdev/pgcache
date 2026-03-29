@@ -116,6 +116,10 @@ class PgCacheStoreTTLRefreshTest {
         Optional<String> retrieved = cacheStore.get(key, String.class);
         assertTrue(retrieved.isPresent());
         assertEquals(value, retrieved.get());
+
+        Optional<TTLPolicy> policyAfterRefresh = cacheStore.getTTLPolicy(key);
+        assertTrue(policyAfterRefresh.isPresent());
+        assertEquals(TTLPolicy.SLIDING, policyAfterRefresh.get(), "Refreshing a sliding entry should preserve its TTL policy");
     }
     
     @Test

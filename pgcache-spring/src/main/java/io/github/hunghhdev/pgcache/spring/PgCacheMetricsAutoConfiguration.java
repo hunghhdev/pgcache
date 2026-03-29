@@ -36,6 +36,10 @@ public class PgCacheMetricsAutoConfiguration {
                     logger.debug("Bound metrics for cache '{}'", cacheName);
                 }
             }
+            cacheManager.addCacheCreatedListener(cache -> {
+                new PgCacheMetrics(cache).bindTo(registry);
+                logger.debug("Bound metrics for newly created cache '{}'", cache.getName());
+            });
             logger.info("PgCache metrics enabled for {} caches", cacheManager.getCacheNames().size());
         };
     }

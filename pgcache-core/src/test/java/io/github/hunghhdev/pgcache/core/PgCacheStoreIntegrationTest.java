@@ -8,6 +8,8 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collection;
@@ -19,9 +21,11 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 @Testcontainers
+@SuppressWarnings("resource")
 class PgCacheStoreIntegrationTest {
 
     @Container
+    @SuppressWarnings("resource")
     private static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:15-alpine")
             .withDatabaseName("pgcache_test")
             .withUsername("test")
@@ -141,6 +145,30 @@ class PgCacheStoreIntegrationTest {
     }
 
     @Test
+    void testPutRejectsSubSecondTtl() {
+        PgCacheException exception = assertThrows(
+                PgCacheException.class,
+                () -> cacheStore.put("sub-second-key-" + UUID.randomUUID(), new TestUser("Fast", 1), Duration.ofMillis(500))
+        );
+
+        assertEquals("TTL must be at least 1 second", exception.getMessage());
+    }
+
+    @Test
+    void testPutRejectsOversizedTtl() {
+        PgCacheException exception = assertThrows(
+                PgCacheException.class,
+                () -> cacheStore.put(
+                        "oversized-ttl-key-" + UUID.randomUUID(),
+                        new TestUser("Large", 2),
+                        Duration.ofSeconds((long) Integer.MAX_VALUE + 1)
+                )
+        );
+
+        assertEquals("TTL exceeds maximum supported value", exception.getMessage());
+    }
+
+    @Test
     void testPutWithoutTTL() {
         // Arrange
         String key = "permanent-key-" + UUID.randomUUID();
@@ -173,6 +201,42 @@ class PgCacheStoreIntegrationTest {
         assertTrue(result.isPresent());
         assertEquals("Bob", result.get().name);
         assertEquals(30, result.get().age);
+    }
+
+    @Test
+    void testPutIfAbsentPermanentReplacesExpiredEntry() throws InterruptedException {
+        String key = "expired-put-if-absent-" + UUID.randomUUID();
+
+        cacheStore.put(key, new TestUser("Expired", 10), Duration.ofSeconds(1));
+        Thread.sleep(2000);
+
+        Optional<Object> result = cacheStore.putIfAbsent(key, new TestUser("Replacement", 20));
+
+        assertTrue(result.isEmpty());
+        Optional<TestUser> stored = cacheStore.get(key, TestUser.class);
+        assertTrue(stored.isPresent());
+        assertEquals("Replacement", stored.get().getName());
+        assertEquals(20, stored.get().getAge());
+    }
+
+    @Test
+    void testPutIfAbsentReusesLegacySlidingRowWithNullLastAccessed() throws Exception {
+        String key = "legacy-sliding-put-if-absent-" + UUID.randomUUID();
+
+        insertLegacySlidingRowWithNullLastAccessed(key, "Legacy", 1);
+
+        Optional<Object> result = cacheStore.putIfAbsent(
+                key,
+                new TestUser("Replacement", 20),
+                Duration.ofMinutes(5),
+                TTLPolicy.SLIDING
+        );
+
+        assertTrue(result.isEmpty());
+        Optional<TestUser> stored = cacheStore.get(key, TestUser.class);
+        assertTrue(stored.isPresent());
+        assertEquals("Replacement", stored.get().getName());
+        assertEquals(20, stored.get().getAge());
     }
 
     @Test
@@ -227,6 +291,19 @@ class PgCacheStoreIntegrationTest {
         assertFalse(results.containsKey(key3));
         assertEquals("User1", results.get(key1).getName());
         assertEquals("User2", results.get(key2).getName());
+    }
+
+    @Test
+    void testGetAndGetAll_useSameExpiryRulesAsContainsKey() throws Exception {
+        String key = "expiry-consistency-" + UUID.randomUUID();
+        TestUser user = new TestUser("Consistency", 42);
+
+        cacheStore.put(key, user, Duration.ofSeconds(1));
+        Thread.sleep(2000);
+
+        assertFalse(cacheStore.containsKey(key));
+        assertFalse(cacheStore.get(key, TestUser.class).isPresent());
+        assertTrue(cacheStore.getAll(java.util.Collections.singletonList(key), TestUser.class).isEmpty());
     }
 
     @Test
@@ -368,6 +445,24 @@ class PgCacheStoreIntegrationTest {
         // Assert
         assertEquals(0, evicted);
         assertTrue(cacheStore.get("data:1", TestUser.class).isPresent());
+    }
+
+    private void insertLegacySlidingRowWithNullLastAccessed(String key, String value, int ttlSeconds) throws Exception {
+        String sql = "INSERT INTO pgcache_store (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
+                "VALUES (?, ?::jsonb, now() - interval '30 seconds', ?, 'SLIDING', NULL)";
+
+        PGSimpleDataSource dataSource = new PGSimpleDataSource();
+        dataSource.setUrl(postgres.getJdbcUrl());
+        dataSource.setUser(postgres.getUsername());
+        dataSource.setPassword(postgres.getPassword());
+
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, key);
+            statement.setString(2, "\"" + value + "\"");
+            statement.setInt(3, ttlSeconds);
+            statement.executeUpdate();
+        }
     }
 
     static class TestUser {

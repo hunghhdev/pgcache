@@ -68,7 +68,9 @@ public class PgQuarkusCacheManager implements CacheManager {
 
         Duration ttl = config != null && config.getTtl() != null ? config.getTtl() : defaultTtl;
         TTLPolicy policy = config != null && config.getTtlPolicy() != null ? config.getTtlPolicy() : defaultTtlPolicy;
-        boolean allowNull = config != null ? config.isAllowNullValues() : allowNullValues;
+        boolean allowNull = config != null && config.getAllowNullValues() != null
+                ? config.getAllowNullValues()
+                : allowNullValues;
 
         logger.debug("Creating cache '{}' with ttl={}, ttlPolicy={}, allowNullValues={}",
                     name, ttl, policy, allowNull);
@@ -96,7 +98,7 @@ public class PgQuarkusCacheManager implements CacheManager {
     public static class CacheConfig {
         private Duration ttl;
         private TTLPolicy ttlPolicy;
-        private boolean allowNullValues = true;
+        private Boolean allowNullValues;
 
         public CacheConfig() {}
 
@@ -122,8 +124,12 @@ public class PgQuarkusCacheManager implements CacheManager {
             this.ttlPolicy = ttlPolicy;
         }
 
-        public boolean isAllowNullValues() {
+        public Boolean getAllowNullValues() {
             return allowNullValues;
+        }
+
+        public boolean isAllowNullValues() {
+            return Boolean.TRUE.equals(allowNullValues);
         }
 
         public void setAllowNullValues(boolean allowNullValues) {

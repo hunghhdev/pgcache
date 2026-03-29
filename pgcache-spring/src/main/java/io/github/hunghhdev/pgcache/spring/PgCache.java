@@ -76,8 +76,13 @@ public class PgCache implements Cache {
 
             return new SimpleValueWrapper(value);
         } catch (Exception e) {
+            if (e instanceof IllegalArgumentException) {
+                logger.warn("Failed to get value from cache '{}' for key '{}': {}", name, key, e.getMessage());
+                return null;
+            }
+
             logger.warn("Failed to get value from cache '{}' for key '{}': {}", name, key, e.getMessage());
-            return null;
+            throw new RuntimeException("Cache get operation failed", e);
         }
     }
     
@@ -102,9 +107,15 @@ public class PgCache implements Cache {
 
             return value;
         } catch (Exception e) {
+            if (type == null) {
+                logger.warn("Failed to get value from cache '{}' for key '{}' with type {}: {}",
+                           name, key, safeTypeName(type), e.getMessage());
+                return null;
+            }
+
             logger.warn("Failed to get value from cache '{}' for key '{}' with type {}: {}",
-                       name, key, type.getSimpleName(), e.getMessage());
-            return null;
+                       name, key, safeTypeName(type), e.getMessage());
+            throw new RuntimeException("Cache get operation failed", e);
         }
     }
     
@@ -326,9 +337,13 @@ public class PgCache implements Cache {
             return value;
         } catch (Exception e) {
             logger.warn("Failed to get value from cache '{}' for key '{}' with type {} and refreshTTL={}: {}",
-                       name, key, type.getSimpleName(), refreshTTL, e.getMessage());
+                       name, key, safeTypeName(type), refreshTTL, e.getMessage());
             return null;
         }
+    }
+
+    private String safeTypeName(Class<?> type) {
+        return type != null ? type.getSimpleName() : "null";
     }
     
     /**

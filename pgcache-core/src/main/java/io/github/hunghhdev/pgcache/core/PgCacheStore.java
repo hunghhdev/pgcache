@@ -51,8 +51,10 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
      */
     private static final String NOT_EXPIRED_WHERE_CLAUSE =
         "(ttl_seconds IS NULL" +
-        " OR (ttl_policy = 'ABSOLUTE' AND (updated_at + (ttl_seconds * interval '1 second')) > now())" +
-        " OR (ttl_policy = 'SLIDING' AND (last_accessed + (ttl_seconds * interval '1 second')) > now()))";
+        " OR ((ttl_policy = 'ABSOLUTE' OR ttl_policy IS NULL) AND (updated_at + (ttl_seconds * interval '1 second')) > now())" +
+        " OR (ttl_policy = 'SLIDING' AND ((COALESCE(last_accessed, updated_at)) + (ttl_seconds * interval '1 second')) > now()))";
+
+    private static final String SQL_IDENTIFIER_PATTERN = "^[a-zA-Z_][a-zA-Z0-9_]*$";
 
     /**
      * SQL WHERE clause for checking expired entries (inverse of NOT_EXPIRED).
@@ -60,14 +62,12 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
      */
     private static final String EXPIRED_WHERE_CLAUSE =
         "(ttl_seconds IS NOT NULL AND (" +
-        "(ttl_policy = 'ABSOLUTE' AND (updated_at + (ttl_seconds * interval '1 second')) <= now()) " +
-        "OR (ttl_policy = 'SLIDING' AND (last_accessed + (ttl_seconds * interval '1 second')) <= now())))";
+        "((ttl_policy = 'ABSOLUTE' OR ttl_policy IS NULL) AND (updated_at + (ttl_seconds * interval '1 second')) <= now()) " +
+        "OR (ttl_policy = 'SLIDING' AND ((COALESCE(last_accessed, updated_at)) + (ttl_seconds * interval '1 second')) <= now())))";
 
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
     private final String tableName;
-    private final boolean autoCreateTable;
-    private final boolean enableBackgroundCleanup;
     private final long cleanupIntervalMinutes;
     private final boolean allowNullValues;
     private final Executor asyncExecutor;
@@ -97,8 +97,6 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         this.dataSource = dataSource;
         this.objectMapper = new ObjectMapper();
         this.tableName = DEFAULT_TABLE_NAME;
-        this.autoCreateTable = autoCreateTable;
-        this.enableBackgroundCleanup = false;
         this.cleanupIntervalMinutes = 5;
         this.allowNullValues = false;
         this.eventListeners = new ArrayList<>();
@@ -146,7 +144,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
             // Check if table already exists
             boolean tableExists = false;
-            try (ResultSet rs = conn.getMetaData().getTables(null, null, tableName, new String[] {"TABLE"})) {
+            try (ResultSet rs = conn.getMetaData().getTables(null, getTableSchemaName(), getTableIdentifierName(), new String[] {"TABLE"})) {
                 tableExists = rs.next();
             }
 
@@ -180,7 +178,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     public boolean tableExists() {
         try (Connection conn = getValidatedConnection()) {
             try (ResultSet tables = conn.getMetaData().getTables(
-                    null, null, tableName, new String[] {"TABLE"})) {
+                    null, getTableSchemaName(), getTableIdentifierName(), new String[] {"TABLE"})) {
                 return tables.next();
             }
         } catch (SQLException e) {
@@ -255,14 +253,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             valueToStore = NullValueMarker.getInstance();
         }
         
-        if (ttl == null || ttl.isNegative() || ttl.isZero()) {
-            throw new PgCacheException("TTL must be positive");
-        }
         if (policy == null) {
             throw new PgCacheException("TTL policy cannot be null");
         }
 
-        int ttlSeconds = (int) ttl.getSeconds();
+        int ttlSeconds = normalizeTtlSeconds(ttl);
 
         // SQL for upsert (PostgreSQL specific) with sliding TTL support
         String sql = "INSERT INTO " + tableName +
@@ -427,6 +422,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             int deletedCount = stmt.executeUpdate(sql);
             
             if (deletedCount > 0) {
+                evictionCount.addAndGet(deletedCount);
                 logger.info("Cleaned up {} expired cache entries", deletedCount);
                 invalidateSizeCache(); // Invalidate size cache if entries were removed
             } else {
@@ -540,7 +536,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             if (tableName == null || tableName.trim().isEmpty()) {
                 throw new IllegalArgumentException("tableName cannot be null or empty");
             }
-            this.tableName = tableName.trim();
+            String trimmed = tableName.trim();
+            if (!isValidTableName(trimmed)) {
+                throw new IllegalArgumentException("tableName must be a valid SQL identifier or schema-qualified identifier (letters, digits, underscores only)");
+            }
+            this.tableName = trimmed;
             return this;
         }
 
@@ -583,8 +583,6 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         this.dataSource = dataSource;
         this.objectMapper = objectMapper;
         this.tableName = tableName != null && !tableName.trim().isEmpty() ? tableName.trim() : DEFAULT_TABLE_NAME;
-        this.autoCreateTable = autoCreateTable;
-        this.enableBackgroundCleanup = enableBackgroundCleanup;
         this.cleanupIntervalMinutes = cleanupIntervalMinutes;
         this.allowNullValues = allowNullValues;
         this.eventListeners = eventListeners != null ? new ArrayList<>(eventListeners) : new ArrayList<>();
@@ -698,7 +696,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
 
         String sql = "SELECT value, updated_at, ttl_seconds, ttl_policy, last_accessed FROM " + tableName +
-                     " WHERE key = ?";
+                     " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE;
 
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -713,19 +711,8 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
                 // Get the values
                 String jsonValue = rs.getString("value");
-                Instant updatedAt = rs.getTimestamp("updated_at").toInstant();
                 Integer ttlSeconds = rs.getObject("ttl_seconds", Integer.class);
                 String ttlPolicyStr = rs.getString("ttl_policy");
-                
-                // Handle null last_accessed for backward compatibility
-                Instant lastAccessed = null;
-                java.sql.Timestamp lastAccessedTimestamp = rs.getTimestamp("last_accessed");
-                if (lastAccessedTimestamp != null) {
-                    lastAccessed = lastAccessedTimestamp.toInstant();
-                } else {
-                    // For backward compatibility, use updated_at if last_accessed is null
-                    lastAccessed = updatedAt;
-                }
 
                 // Parse TTL policy (default to ABSOLUTE for backward compatibility)
                 TTLPolicy ttlPolicy = TTLPolicy.ABSOLUTE;
@@ -735,16 +722,6 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                     } catch (IllegalArgumentException e) {
                         logger.warn("Invalid TTL policy '{}' for key '{}', defaulting to ABSOLUTE", ttlPolicyStr, key);
                     }
-                }
-
-                if (TtlHelper.isExpired(updatedAt, lastAccessed, ttlSeconds, ttlPolicy)) {
-                    try {
-                        evict(key);
-                    } catch (Exception evictException) {
-                        logger.warn("Failed to evict expired key '{}', continuing with empty result", key, evictException);
-                    }
-                    missCount.incrementAndGet();
-                    return Optional.empty();
                 }
 
                 // Update last_accessed timestamp for sliding TTL if refreshTTL is true
@@ -793,7 +770,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             stmt.executeUpdate();
 
         } catch (SQLException e) {
-            logger.warn("Failed to update last_accessed timestamp for key '{}'", key, e);
+            logger.warn("Failed to update last_accessed timestamp for key '{}': {}", key, e.getMessage());
         }
     }
 
@@ -818,21 +795,15 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
                 Integer ttlSeconds = rs.getObject("ttl_seconds", Integer.class);
                 if (ttlSeconds == null) {
-                    return Optional.empty(); // No TTL set
+                    return Optional.empty();
                 }
 
-                Instant updatedAt = rs.getTimestamp("updated_at").toInstant();
+                java.sql.Timestamp updatedAtTimestamp = rs.getTimestamp("updated_at");
+                Instant updatedAt = updatedAtTimestamp != null ? updatedAtTimestamp.toInstant() : Instant.now();
                 String ttlPolicyStr = rs.getString("ttl_policy");
-                
-                // Handle null last_accessed for backward compatibility
-                Instant lastAccessed = null;
+
                 java.sql.Timestamp lastAccessedTimestamp = rs.getTimestamp("last_accessed");
-                if (lastAccessedTimestamp != null) {
-                    lastAccessed = lastAccessedTimestamp.toInstant();
-                } else {
-                    // For backward compatibility, use updated_at if last_accessed is null
-                    lastAccessed = updatedAt;
-                }
+                Instant lastAccessed = lastAccessedTimestamp != null ? lastAccessedTimestamp.toInstant() : updatedAt;
 
                 // Parse TTL policy
                 TTLPolicy ttlPolicy = TTLPolicy.ABSOLUTE;
@@ -901,27 +872,24 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         if (key == null || key.isEmpty()) {
             throw new PgCacheException("Cache key cannot be null or empty");
         }
-        if (newTtl == null || newTtl.isNegative()) {
-            throw new PgCacheException("TTL cannot be null or negative");
-        }
+        int ttlSeconds = normalizeTtlSeconds(newTtl);
 
         // First try to update existing entry (may include permanent entries)
         String sql = "UPDATE " + tableName + 
-                     " SET ttl_seconds = ?, ttl_policy = ?, updated_at = CURRENT_TIMESTAMP, last_accessed = CURRENT_TIMESTAMP " +
+                     " SET ttl_seconds = ?, updated_at = CURRENT_TIMESTAMP, last_accessed = CURRENT_TIMESTAMP " +
                      " WHERE key = ?";
 
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            stmt.setLong(1, newTtl.getSeconds());
-            stmt.setString(2, TTLPolicy.ABSOLUTE.name()); // Default to ABSOLUTE when manually setting TTL
-            stmt.setString(3, key);
+            stmt.setInt(1, ttlSeconds);
+            stmt.setString(2, key);
 
             int updatedRows = stmt.executeUpdate();
             boolean success = updatedRows > 0;
             
             if (success) {
-                logger.debug("Successfully refreshed TTL for key '{}' to {} seconds", key, newTtl.getSeconds());
+                logger.debug("Successfully refreshed TTL for key '{}' to {} seconds", key, ttlSeconds);
             } else {
                 logger.debug("Failed to refresh TTL for key '{}' - key not found", key);
             }
@@ -948,44 +916,53 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             valueToStore = NullValueMarker.getInstance();
         }
 
-        if (ttl == null || ttl.isNegative() || ttl.isZero()) {
-            throw new PgCacheException("TTL must be positive");
-        }
         if (policy == null) {
             throw new PgCacheException("TTL policy cannot be null");
         }
 
-        int ttlSeconds = (int) ttl.getSeconds();
+        int ttlSeconds = normalizeTtlSeconds(ttl);
 
-        // Atomic insert - only inserts if key doesn't exist
-        // Uses ON CONFLICT DO NOTHING to avoid race conditions
-        String insertSql = "INSERT INTO " + tableName +
+        try (Connection conn = getValidatedConnection()) {
+            // First, delete expired entry for this key if it exists
+            // This prevents blocking by expired rows
+            String deleteExpiredSql = "DELETE FROM " + tableName +
+                     " WHERE key = ? AND (" + EXPIRED_WHERE_CLAUSE + ")";
+            try (PreparedStatement deleteStmt = conn.prepareStatement(deleteExpiredSql)) {
+                deleteStmt.setString(1, key);
+                int deletedExpired = deleteStmt.executeUpdate();
+                if (deletedExpired > 0) {
+                    invalidateSizeCache();
+                }
+            }
+
+            // Atomic insert - only inserts if key doesn't exist
+            // Uses ON CONFLICT DO NOTHING to avoid race conditions
+            String insertSql = "INSERT INTO " + tableName +
                      " (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
                      "VALUES (?, ?::jsonb, now(), ?, ?, now()) " +
                      "ON CONFLICT (key) DO NOTHING";
 
-        try (Connection conn = getValidatedConnection();
-             PreparedStatement stmt = conn.prepareStatement(insertSql)) {
+            try (PreparedStatement stmt = conn.prepareStatement(insertSql)) {
+                String jsonValue = objectMapper.writeValueAsString(valueToStore);
 
-            String jsonValue = objectMapper.writeValueAsString(valueToStore);
+                stmt.setString(1, key);
+                stmt.setString(2, jsonValue);
+                stmt.setInt(3, ttlSeconds);
+                stmt.setString(4, policy.name());
 
-            stmt.setString(1, key);
-            stmt.setString(2, jsonValue);
-            stmt.setInt(3, ttlSeconds);
-            stmt.setString(4, policy.name());
+                int inserted = stmt.executeUpdate();
 
-            int inserted = stmt.executeUpdate();
-
-            if (inserted > 0) {
-                // Successfully inserted - key was not present
-                putCount.incrementAndGet();
-                invalidateSizeCache();
-                return Optional.empty();
-            } else {
-                // Key already exists - return the existing value
-                return get(key, Object.class, false);
+                if (inserted > 0) {
+                    // Successfully inserted - key was not present
+                    putCount.incrementAndGet();
+                    invalidateSizeCache();
+                    fireOnPut(key, value);
+                    return Optional.empty();
+                } else {
+                    // Key already exists and is not expired - return the existing value
+                    return get(key, Object.class, false);
+                }
             }
-
         } catch (Exception e) {
             throw new PgCacheException("Failed to putIfAbsent value in cache", e);
         }
@@ -1007,31 +984,36 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
 
         // Atomic insert for permanent entry
-        String insertSql = "INSERT INTO " + tableName +
-                     " (key, value, updated_at, ttl_seconds) " +
-                     "VALUES (?, ?::jsonb, now(), NULL) " +
-                     "ON CONFLICT (key) DO NOTHING";
-
-        try (Connection conn = getValidatedConnection();
-             PreparedStatement stmt = conn.prepareStatement(insertSql)) {
-
-            String jsonValue = objectMapper.writeValueAsString(valueToStore);
-
-            stmt.setString(1, key);
-            stmt.setString(2, jsonValue);
-
-            int inserted = stmt.executeUpdate();
-
-            if (inserted > 0) {
-                // Successfully inserted - key was not present
-                putCount.incrementAndGet();
-                invalidateSizeCache();
-                return Optional.empty();
-            } else {
-                // Key already exists - return the existing value
-                return get(key, Object.class, false);
+        try (Connection conn = getValidatedConnection()) {
+            String deleteExpiredSql = "DELETE FROM " + tableName +
+                    " WHERE key = ? AND (" + EXPIRED_WHERE_CLAUSE + ")";
+            try (PreparedStatement deleteStmt = conn.prepareStatement(deleteExpiredSql)) {
+                deleteStmt.setString(1, key);
+                if (deleteStmt.executeUpdate() > 0) {
+                    invalidateSizeCache();
+                }
             }
 
+            String insertSql = "INSERT INTO " + tableName +
+                    " (key, value, updated_at, ttl_seconds) " +
+                    "VALUES (?, ?::jsonb, now(), NULL) " +
+                    "ON CONFLICT (key) DO NOTHING";
+            try (PreparedStatement stmt = conn.prepareStatement(insertSql)) {
+                String jsonValue = objectMapper.writeValueAsString(valueToStore);
+
+                stmt.setString(1, key);
+                stmt.setString(2, jsonValue);
+
+                int inserted = stmt.executeUpdate();
+
+                if (inserted > 0) {
+                    putCount.incrementAndGet();
+                    invalidateSizeCache();
+                    return Optional.empty();
+                }
+
+                return get(key, Object.class, false);
+            }
         } catch (Exception e) {
             throw new PgCacheException("Failed to putIfAbsent value in cache", e);
         }
@@ -1056,7 +1038,8 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         for (int i = 0; i < keyList.size(); i++) {
             sql.append(i > 0 ? ", ?" : "?");
         }
-        sql.append(")");
+        sql.append(") AND ");
+        sql.append(NOT_EXPIRED_WHERE_CLAUSE);
 
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
@@ -1069,28 +1052,6 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 while (rs.next()) {
                     String key = rs.getString("key");
                     String jsonValue = rs.getString("value");
-                    Instant updatedAt = rs.getTimestamp("updated_at").toInstant();
-                    Integer ttlSeconds = rs.getObject("ttl_seconds", Integer.class);
-                    String ttlPolicyStr = rs.getString("ttl_policy");
-
-                    Instant lastAccessed = updatedAt;
-                    java.sql.Timestamp lastAccessedTs = rs.getTimestamp("last_accessed");
-                    if (lastAccessedTs != null) {
-                        lastAccessed = lastAccessedTs.toInstant();
-                    }
-
-                    TTLPolicy ttlPolicy = TTLPolicy.ABSOLUTE;
-                    if (ttlPolicyStr != null) {
-                        try {
-                            ttlPolicy = TTLPolicy.valueOf(ttlPolicyStr);
-                        } catch (IllegalArgumentException e) {
-                            // Default to ABSOLUTE
-                        }
-                    }
-
-                    if (TtlHelper.isExpired(updatedAt, lastAccessed, ttlSeconds, ttlPolicy)) {
-                        continue;
-                    }
 
                     // Deserialize value
                     try {
@@ -1139,14 +1100,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         if (entries == null || entries.isEmpty()) {
             return;
         }
-        if (ttl == null || ttl.isNegative() || ttl.isZero()) {
-            throw new PgCacheException("TTL must be positive");
-        }
         if (policy == null) {
             throw new PgCacheException("TTL policy cannot be null");
         }
 
-        int ttlSeconds = (int) ttl.getSeconds();
+        int ttlSeconds = normalizeTtlSeconds(ttl);
 
         String sql = "INSERT INTO " + tableName +
                      " (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
@@ -1405,5 +1363,46 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         return "CREATE INDEX IF NOT EXISTS " + tableName + "_sliding_ttl_idx " +
                "ON " + tableName + " (ttl_policy, last_accessed) " +
                "WHERE ttl_policy = 'SLIDING'";
+    }
+
+    private int normalizeTtlSeconds(Duration ttl) {
+        if (ttl == null || ttl.isNegative() || ttl.isZero()) {
+            throw new PgCacheException("TTL must be positive");
+        }
+
+        long ttlSeconds = ttl.getSeconds();
+        if (ttlSeconds <= 0) {
+            throw new PgCacheException("TTL must be at least 1 second");
+        }
+        if (ttlSeconds > Integer.MAX_VALUE) {
+            throw new PgCacheException("TTL exceeds maximum supported value");
+        }
+
+        return (int) ttlSeconds;
+    }
+
+    private String getTableSchemaName() {
+        int separatorIndex = tableName.indexOf('.');
+        return separatorIndex >= 0 ? tableName.substring(0, separatorIndex) : null;
+    }
+
+    private String getTableIdentifierName() {
+        int separatorIndex = tableName.indexOf('.');
+        return separatorIndex >= 0 ? tableName.substring(separatorIndex + 1) : tableName;
+    }
+
+    private static boolean isValidTableName(String tableName) {
+        String[] segments = tableName.split("\\.", -1);
+        if (segments.length == 0 || segments.length > 2) {
+            return false;
+        }
+
+        for (String segment : segments) {
+            if (!segment.matches(SQL_IDENTIFIER_PATTERN)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

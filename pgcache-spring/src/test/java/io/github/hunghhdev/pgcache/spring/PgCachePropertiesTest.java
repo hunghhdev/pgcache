@@ -44,6 +44,7 @@ class PgCachePropertiesTest {
     void testCacheConfigMerging() {
         PgCacheProperties properties = new PgCacheProperties();
         properties.setDefaultTtl(Duration.ofHours(2));
+        properties.setTtlPolicy(io.github.hunghhdev.pgcache.core.TTLPolicy.SLIDING);
         properties.setAllowNullValues(false);
         properties.setTableName("global_cache");
         properties.getBackgroundCleanup().setEnabled(true);
@@ -73,12 +74,20 @@ class PgCachePropertiesTest {
         assertEquals("global_cache", config2.getTableName()); // Global default
         assertTrue(config2.isBackgroundCleanupEnabled()); // Global default
         assertEquals(Duration.ofMinutes(15), config2.getBackgroundCleanupInterval()); // Global default
+        assertEquals(io.github.hunghhdev.pgcache.core.TTLPolicy.SLIDING, config2.getTtlPolicy());
+
+        PgCacheProperties legacyDefaultProperties = new PgCacheProperties();
+        PgCacheProperties.CacheConfig legacyDefaultCache = new PgCacheProperties.CacheConfig();
+
+        PgCacheManager.PgCacheConfiguration legacyDefaultConfig = legacyDefaultCache.toConfiguration(legacyDefaultProperties);
+        assertEquals("pg_cache", legacyDefaultConfig.getTableName());
     }
     
     @Test
     void testDefaultConfiguration() {
         PgCacheProperties properties = new PgCacheProperties();
         properties.setDefaultTtl(Duration.ofHours(3));
+        properties.setTtlPolicy(io.github.hunghhdev.pgcache.core.TTLPolicy.SLIDING);
         properties.setAllowNullValues(true);
         properties.setTableName("test_cache");
         properties.getBackgroundCleanup().setEnabled(false);
@@ -90,6 +99,7 @@ class PgCachePropertiesTest {
         assertEquals("test_cache", config.getTableName());
         assertFalse(config.isBackgroundCleanupEnabled());
         assertEquals(Duration.ofMinutes(45), config.getBackgroundCleanupInterval());
+        assertEquals(io.github.hunghhdev.pgcache.core.TTLPolicy.SLIDING, config.getTtlPolicy());
     }
     
     @Test

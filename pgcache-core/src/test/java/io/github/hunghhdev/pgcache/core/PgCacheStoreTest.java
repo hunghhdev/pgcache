@@ -15,9 +15,8 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.sql.Timestamp;
 import java.time.Duration;
-import java.time.Instant;
+import java.util.Collections;
 import java.util.Collection;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -78,10 +77,10 @@ class PgCacheStoreTest {
                 .thenReturn(resultSet);
         when(resultSet.next()).thenReturn(false); // Table doesn't exist
         
-        PgCacheStore store = PgCacheStore.builder()
+        assertDoesNotThrow(() -> PgCacheStore.builder()
                 .dataSource(dataSource)
                 .autoCreateTable(true)
-                .build();
+                .build());
 
         // Verify
         verify(statement).execute(contains("CREATE UNLOGGED TABLE IF NOT EXISTS pgcache_store"));
@@ -97,8 +96,6 @@ class PgCacheStoreTest {
         when(preparedStatement.executeQuery()).thenReturn(resultSet);
         when(resultSet.next()).thenReturn(true);
         when(resultSet.getString("value")).thenReturn(jsonValue);
-        when(resultSet.getTimestamp("updated_at")).thenReturn(
-            Timestamp.from(Instant.now().minusSeconds(30)));
         when(resultSet.getObject("ttl_seconds", Integer.class)).thenReturn(60);
 
         // Act
@@ -130,29 +127,15 @@ class PgCacheStoreTest {
     void testGet_WhenKeyIsExpired() throws Exception {
         // Arrange
         String key = "expired-key";
-        TestObject expectedObject = new TestObject("expired-value", 456);
-        String jsonValue = realObjectMapper.writeValueAsString(expectedObject);
 
         when(preparedStatement.executeQuery()).thenReturn(resultSet);
-        when(resultSet.next()).thenReturn(true);
-        when(resultSet.getString("value")).thenReturn(jsonValue);
-        when(resultSet.getTimestamp("updated_at")).thenReturn(
-            Timestamp.from(Instant.now().minusSeconds(120)));
-        when(resultSet.getObject("ttl_seconds", Integer.class)).thenReturn(60);
-
-        // Create a second prepared statement for the evict call
-        PreparedStatement evictStatement = mock(PreparedStatement.class);
-        when(connection.prepareStatement(contains("DELETE"))).thenReturn(evictStatement);
+        when(resultSet.next()).thenReturn(false);
 
         // Act
         Optional<TestObject> result = cacheStore.get(key, TestObject.class);
 
         // Assert
         assertFalse(result.isPresent());
-
-        // Verify evict was called
-        verify(evictStatement).setString(1, key);
-        verify(evictStatement).executeUpdate();
     }
 
     @Test
@@ -183,6 +166,65 @@ class PgCacheStoreTest {
     }
 
     @Test
+    void testPut_WithSubSecondTtl_RejectsZeroSecondConversion() throws Exception {
+        PgCacheException exception = assertThrows(
+                PgCacheException.class,
+                () -> cacheStore.put("test-key", new TestObject("value", 1), Duration.ofMillis(500))
+        );
+
+        assertEquals("TTL must be at least 1 second", exception.getMessage());
+        verify(preparedStatement, never()).executeUpdate();
+    }
+
+    @Test
+    void testPut_WithOversizedTtl_RejectsIntOverflow() throws Exception {
+        PgCacheException exception = assertThrows(
+                PgCacheException.class,
+                () -> cacheStore.put("test-key", new TestObject("value", 1), Duration.ofSeconds((long) Integer.MAX_VALUE + 1))
+        );
+
+        assertEquals("TTL exceeds maximum supported value", exception.getMessage());
+        verify(preparedStatement, never()).executeUpdate();
+    }
+
+    @Test
+    void testPutIfAbsent_WithSubSecondTtl_RejectsZeroSecondConversion() throws Exception {
+        PgCacheException exception = assertThrows(
+                PgCacheException.class,
+                () -> cacheStore.putIfAbsent("test-key", new TestObject("value", 1), Duration.ofMillis(500), TTLPolicy.ABSOLUTE)
+        );
+
+        assertEquals("TTL must be at least 1 second", exception.getMessage());
+        verify(preparedStatement, never()).executeUpdate();
+    }
+
+    @Test
+    void testPutAll_WithOversizedTtl_RejectsIntOverflow() throws Exception {
+        PgCacheException exception = assertThrows(
+                PgCacheException.class,
+                () -> cacheStore.putAll(
+                        Collections.singletonMap("test-key", new TestObject("value", 1)),
+                        Duration.ofSeconds((long) Integer.MAX_VALUE + 1),
+                        TTLPolicy.ABSOLUTE
+                )
+        );
+
+        assertEquals("TTL exceeds maximum supported value", exception.getMessage());
+        verify(preparedStatement, never()).executeBatch();
+    }
+
+    @Test
+    void testRefreshTtl_WithSubSecondTtl_RejectsZeroSecondConversion() throws Exception {
+        PgCacheException exception = assertThrows(
+                PgCacheException.class,
+                () -> cacheStore.refreshTTL("test-key", Duration.ofMillis(500))
+        );
+
+        assertEquals("TTL must be at least 1 second", exception.getMessage());
+        verify(preparedStatement, never()).executeUpdate();
+    }
+
+    @Test
     void testPutWithoutTTL() throws Exception {
         // Arrange
         String key = "test-key";
@@ -206,6 +248,34 @@ class PgCacheStoreTest {
     }
 
     @Test
+    void testBuilderTableNameAcceptsSchemaQualifiedIdentifier() throws Exception {
+        PgCacheStore schemaQualifiedStore = PgCacheStore.builder()
+                .dataSource(dataSource)
+                .objectMapper(realObjectMapper)
+                .autoCreateTable(false)
+                .tableName("cache_schema.cache_entries")
+                .build();
+
+        schemaQualifiedStore.put("schema-qualified-key", new TestObject("value", 1));
+
+        verify(connection).prepareStatement(contains("INSERT INTO cache_schema.cache_entries"));
+    }
+
+    @Test
+    void testBuilderTableNameRejectsUnsafeQualifiedIdentifiers() {
+        assertAll(
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> PgCacheStore.builder().tableName("cache_schema..cache_entries")),
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> PgCacheStore.builder().tableName("cache_schema.cache-entries")),
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> PgCacheStore.builder().tableName("cache_schema.cache_entries.extra")),
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> PgCacheStore.builder().tableName("cache_schema.cache_entries;DROP TABLE users"))
+        );
+    }
+
+    @Test
     void testGetWithNullTTL() throws Exception {
         // Arrange
         String key = "test-key";
@@ -215,8 +285,6 @@ class PgCacheStoreTest {
         when(preparedStatement.executeQuery()).thenReturn(resultSet);
         when(resultSet.next()).thenReturn(true);
         when(resultSet.getString("value")).thenReturn(jsonValue);
-        when(resultSet.getTimestamp("updated_at")).thenReturn(
-            Timestamp.from(Instant.now().minusSeconds(3600))); // Old entry
         when(resultSet.getObject("ttl_seconds", Integer.class)).thenReturn(null); // No TTL
 
         // Act
@@ -345,7 +413,6 @@ class PgCacheStoreTest {
         when(preparedStatement.executeQuery()).thenReturn(resultSet);
         when(resultSet.next()).thenReturn(true);
         when(resultSet.getString("value")).thenReturn(json);
-        when(resultSet.getTimestamp("updated_at")).thenReturn(Timestamp.from(Instant.now()));
         when(resultSet.getObject("ttl_seconds", Integer.class)).thenReturn(60);
 
         // Act

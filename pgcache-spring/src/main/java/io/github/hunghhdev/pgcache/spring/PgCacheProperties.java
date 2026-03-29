@@ -43,7 +43,12 @@ public class PgCacheProperties {
      * Per-cache configurations.
      */
     private Map<String, CacheConfig> caches = new HashMap<>();
-    
+
+    /**
+     * Default TTL policy (ABSOLUTE or SLIDING).
+     */
+    private io.github.hunghhdev.pgcache.core.TTLPolicy ttlPolicy = io.github.hunghhdev.pgcache.core.TTLPolicy.ABSOLUTE;
+
     // Getters and setters
     
     public boolean isEnabled() {
@@ -93,7 +98,15 @@ public class PgCacheProperties {
     public void setCaches(Map<String, CacheConfig> caches) {
         this.caches = caches;
     }
-    
+
+    public io.github.hunghhdev.pgcache.core.TTLPolicy getTtlPolicy() {
+        return ttlPolicy;
+    }
+
+    public void setTtlPolicy(io.github.hunghhdev.pgcache.core.TTLPolicy ttlPolicy) {
+        this.ttlPolicy = ttlPolicy;
+    }
+
     /**
      * Background cleanup configuration.
      */
@@ -212,7 +225,7 @@ public class PgCacheProperties {
             
             // Use configured TTL policy or default to ABSOLUTE
             io.github.hunghhdev.pgcache.core.TTLPolicy effectivePolicy = 
-                this.ttlPolicy != null ? this.ttlPolicy : io.github.hunghhdev.pgcache.core.TTLPolicy.ABSOLUTE;
+                this.ttlPolicy != null ? this.ttlPolicy : globalProperties.getTtlPolicy();
             
             return new PgCacheManager.PgCacheConfiguration(
                 effectiveTtl,
@@ -235,7 +248,7 @@ public class PgCacheProperties {
             tableName,
             backgroundCleanup.isEnabled(),
             backgroundCleanup.getInterval(),
-            io.github.hunghhdev.pgcache.core.TTLPolicy.ABSOLUTE
+            ttlPolicy
         );
     }
 }

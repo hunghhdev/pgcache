@@ -10,7 +10,11 @@ import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -151,6 +155,36 @@ class PgCacheStoreSlidingTTLTest {
     }
 
     @Test
+    void testGetReadsLegacySlidingRowWhenLastAccessedIsNull() throws Exception {
+        cacheStore.clear();
+
+        String key = "legacy-sliding-get";
+        String value = "legacy-value";
+        insertLegacySlidingRowWithNullLastAccessed(key, value, 300);
+
+        Optional<String> result = cacheStore.get(key, String.class);
+
+        assertTrue(result.isPresent());
+        assertEquals(value, result.get());
+    }
+
+    @Test
+    void testGetAllReadsLegacySlidingRowsWhenLastAccessedIsNull() throws Exception {
+        cacheStore.clear();
+
+        String firstKey = "legacy-sliding-getall-1";
+        String secondKey = "legacy-sliding-getall-2";
+        insertLegacySlidingRowWithNullLastAccessed(firstKey, "first-value", 300);
+        insertLegacySlidingRowWithNullLastAccessed(secondKey, "second-value", 300);
+
+        Map<String, String> results = cacheStore.getAll(Arrays.asList(firstKey, secondKey), String.class);
+
+        assertEquals(2, results.size());
+        assertEquals("first-value", results.get(firstKey));
+        assertEquals("second-value", results.get(secondKey));
+    }
+
+    @Test
     void testSlidingTTLWithConcurrentAccess() throws InterruptedException {
         // Test thread safety of sliding TTL
         Duration ttl = Duration.ofSeconds(5);
@@ -242,5 +276,18 @@ class PgCacheStoreSlidingTTLTest {
         cacheStore.put("fresh-entry", "value", Duration.ofMinutes(10), TTLPolicy.ABSOLUTE);
 
         assertEquals(1, cacheStore.size(), "Only non-expired entry should be counted");
+    }
+
+    private void insertLegacySlidingRowWithNullLastAccessed(String key, String value, int ttlSeconds) throws Exception {
+        String sql = "INSERT INTO pgcache_store (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
+                "VALUES (?, ?::jsonb, now() - interval '30 seconds', ?, 'SLIDING', NULL)";
+
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, key);
+            statement.setString(2, '"' + value + '"');
+            statement.setInt(3, ttlSeconds);
+            statement.executeUpdate();
+        }
     }
 }

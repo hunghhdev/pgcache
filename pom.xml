@@ -57,8 +57,7 @@
 
     <properties>
         <java.version>11</java.version>
-        <maven.compiler.source>${java.version}</maven.compiler.source>
-        <maven.compiler.target>${java.version}</maven.compiler.target>
+        <maven.compiler.release>${java.version}</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <!-- Dependency versions -->
@@ -67,7 +66,7 @@
         <slf4j.version>1.7.36</slf4j.version>
         <junit.version>5.9.3</junit.version>
         <mockito.version>4.11.0</mockito.version>
-        <testcontainers.version>1.19.8</testcontainers.version>
+        <testcontainers.version>1.21.4</testcontainers.version>
         <hikaricp.version>5.0.1</hikaricp.version>
         
         <!-- Spring versions -->
@@ -215,8 +214,7 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.11.0</version>
                 <configuration>
-                    <source>${java.version}</source>
-                    <target>${java.version}</target>
+                    <release>${maven.compiler.release}</release>
                 </configuration>
                 </plugin>
 

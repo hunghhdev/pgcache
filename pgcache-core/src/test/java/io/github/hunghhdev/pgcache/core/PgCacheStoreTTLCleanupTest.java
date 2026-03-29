@@ -9,6 +9,8 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -17,9 +19,11 @@ import static org.junit.jupiter.api.Assertions.*;
  * Integration tests for TTL cleanup functionality in PgCacheStore.
  */
 @Testcontainers
+@SuppressWarnings("resource")
 class PgCacheStoreTTLCleanupTest {
 
     @Container
+    @SuppressWarnings("resource")
     private static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:15-alpine")
             .withDatabaseName("pgcache_test")
             .withUsername("test")
@@ -140,7 +144,7 @@ class PgCacheStoreTTLCleanupTest {
             // In a real scenario, we'd mock the scheduler or reduce the interval
             
             // Verify that manual cleanup would find fewer entries (background might have cleaned up)
-            int remainingExpired = backgroundCache.cleanupExpired();
+            backgroundCache.cleanupExpired();
             
             // The background cleanup might have already cleaned up, or it might not have run yet
             // So we just verify the cache still works correctly
@@ -253,5 +257,53 @@ class PgCacheStoreTTLCleanupTest {
         
         // Size should reflect only permanent entries
         assertEquals(2, cache.size());
+    }
+
+    @Test
+    void testCleanupExpiredRemovesLegacySlidingRowWithNullLastAccessed() throws Exception {
+        insertLegacySlidingRowWithNullLastAccessed("legacy-cleanup", "legacy-value", 1);
+
+        int cleanedUp = cache.cleanupExpired();
+
+        assertEquals(1, cleanedUp);
+        assertFalse(cache.get("legacy-cleanup", String.class).isPresent());
+    }
+
+    @Test
+    void testCleanupExpiredUpdatesEvictionStatistics() {
+        cache.put("expired1", "value1", Duration.ofSeconds(1));
+        cache.put("expired2", "value2", Duration.ofSeconds(1));
+        cache.put("permanent", "value3");
+
+        try {
+            Thread.sleep(2000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            fail("Test interrupted");
+        }
+
+        int cleanedUp = cache.cleanupExpired();
+        CacheStatistics statistics = cache.getStatistics();
+
+        assertEquals(2, cleanedUp);
+        assertEquals(2, statistics.getEvictionCount(), "cleanupExpired should contribute to eviction statistics");
+    }
+
+    private void insertLegacySlidingRowWithNullLastAccessed(String key, String value, int ttlSeconds) throws Exception {
+        String sql = "INSERT INTO pgcache_store (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
+                "VALUES (?, ?::jsonb, now() - interval '30 seconds', ?, 'SLIDING', NULL)";
+
+        PGSimpleDataSource dataSource = new PGSimpleDataSource();
+        dataSource.setUrl(postgres.getJdbcUrl());
+        dataSource.setUser(postgres.getUsername());
+        dataSource.setPassword(postgres.getPassword());
+
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, key);
+            statement.setString(2, '"' + value + '"');
+            statement.setInt(3, ttlSeconds);
+            statement.executeUpdate();
+        }
     }
 }

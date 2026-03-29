@@ -353,7 +353,7 @@ class PgQuarkusCacheIntegrationTest {
         PgCacheStore shortTtlStore = cacheStore;
         PgQuarkusCacheManager shortTtlManager = new PgQuarkusCacheManager(
                 shortTtlStore,
-                Duration.ofMillis(100),
+                Duration.ofSeconds(1),
                 true,
                 TTLPolicy.ABSOLUTE
         );
@@ -364,7 +364,7 @@ class PgQuarkusCacheIntegrationTest {
         cache.<String, String>get("expiringKey", k -> "expiring-value").await().indefinitely();
 
         // Wait for expiration
-        Thread.sleep(200);
+        Thread.sleep(1200);
 
         // Trigger cleanup
         cache.cleanupExpired();
