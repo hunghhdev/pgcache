@@ -187,6 +187,20 @@ public class PgCacheManager implements CacheManager, DisposableBean {
     public int getCacheCount() {
         return cacheMap.size();
     }
+
+    /**
+     * Returns statistics per underlying {@link PgCacheStore}, keyed by a stable identifier
+     * derived from the store's configuration. Multiple caches sharing a store appear under
+     * the same key.
+     *
+     * @return map of store identifier -> statistics snapshot
+     * @since 1.7.0
+     */
+    public java.util.Map<String, io.github.hunghhdev.pgcache.core.CacheStatistics> getStoreStatistics() {
+        java.util.Map<String, io.github.hunghhdev.pgcache.core.CacheStatistics> result = new java.util.LinkedHashMap<>();
+        storeMap.forEach((key, store) -> result.put(key.toString(), store.getStatistics()));
+        return result;
+    }
     
     /**
      * Cleanup expired entries in all caches.
@@ -298,6 +312,13 @@ public class PgCacheManager implements CacheManager, DisposableBean {
         @Override
         public int hashCode() {
             return Objects.hash(allowNullValues, tableName, backgroundCleanupEnabled, backgroundCleanupInterval);
+        }
+
+        @Override
+        public String toString() {
+            return tableName + "[cleanup=" + backgroundCleanupEnabled
+                 + ",interval=" + backgroundCleanupInterval
+                 + ",nullValues=" + allowNullValues + "]";
         }
     }
     

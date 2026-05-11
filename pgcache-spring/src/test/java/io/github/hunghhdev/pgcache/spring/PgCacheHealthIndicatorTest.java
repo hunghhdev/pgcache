@@ -12,12 +12,16 @@ import org.springframework.boot.actuate.health.Status;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class PgCacheHealthIndicatorTest {
+
+    private static final String STORE_KEY = "pg_cache[cleanup=false,interval=null,nullValues=true]";
 
     @Mock
     private PgCacheManager cacheManager;
@@ -32,13 +36,19 @@ class PgCacheHealthIndicatorTest {
         healthIndicator = new PgCacheHealthIndicator(cacheManager);
     }
 
+    private Map<String, CacheStatistics> singleStoreStats(CacheStatistics stats) {
+        Map<String, CacheStatistics> m = new LinkedHashMap<>();
+        m.put(STORE_KEY, stats);
+        return m;
+    }
+
     @Test
     void health_returnsUp_whenCacheManagerIsHealthy() {
         when(cacheManager.getCacheCount()).thenReturn(1);
         when(cacheManager.getCacheNames()).thenReturn(Collections.singletonList("testCache"));
         when(cacheManager.getCache("testCache")).thenReturn(cache);
         when(cache.size()).thenReturn(10L);
-        when(cache.getStatistics()).thenReturn(new CacheStatistics(100, 20, 50, 5));
+        when(cacheManager.getStoreStatistics()).thenReturn(singleStoreStats(new CacheStatistics(100, 20, 50, 5)));
 
         Health health = healthIndicator.health();
 
@@ -46,10 +56,10 @@ class PgCacheHealthIndicatorTest {
         assertEquals(1, health.getDetails().get("cache.count"));
         assertEquals(10L, health.getDetails().get("cache.testCache.size"));
         assertEquals(10L, health.getDetails().get("cache.total.size"));
-        assertEquals(100L, health.getDetails().get("stats.hits"));
-        assertEquals(20L, health.getDetails().get("stats.misses"));
-        assertEquals(50L, health.getDetails().get("stats.puts"));
-        assertEquals(5L, health.getDetails().get("stats.evictions"));
+        assertEquals(100L, health.getDetails().get("stats." + STORE_KEY + ".hits"));
+        assertEquals(20L, health.getDetails().get("stats." + STORE_KEY + ".misses"));
+        assertEquals(50L, health.getDetails().get("stats." + STORE_KEY + ".puts"));
+        assertEquals(5L, health.getDetails().get("stats." + STORE_KEY + ".evictions"));
     }
 
     @Test
@@ -60,7 +70,7 @@ class PgCacheHealthIndicatorTest {
         when(cacheManager.getCache("cache1")).thenReturn(cache);
         when(cacheManager.getCache("cache2")).thenReturn(cache);
         when(cache.size()).thenReturn(5L);
-        when(cache.getStatistics()).thenReturn(new CacheStatistics(50, 10, 30, 2));
+        when(cacheManager.getStoreStatistics()).thenReturn(singleStoreStats(new CacheStatistics(50, 10, 30, 2)));
 
         Health health = healthIndicator.health();
 
@@ -73,6 +83,7 @@ class PgCacheHealthIndicatorTest {
     void health_returnsUp_withNoCaches() {
         when(cacheManager.getCacheCount()).thenReturn(0);
         when(cacheManager.getCacheNames()).thenReturn(Collections.emptyList());
+        when(cacheManager.getStoreStatistics()).thenReturn(Collections.emptyMap());
 
         Health health = healthIndicator.health();
 
@@ -101,7 +112,7 @@ class PgCacheHealthIndicatorTest {
         when(cacheManager.getCache("goodCache")).thenReturn(cache);
         when(cacheManager.getCache("badCache")).thenThrow(new RuntimeException("Cache error"));
         when(cache.size()).thenReturn(10L);
-        when(cache.getStatistics()).thenReturn(new CacheStatistics(10, 5, 8, 1));
+        when(cacheManager.getStoreStatistics()).thenReturn(singleStoreStats(new CacheStatistics(10, 5, 8, 1)));
 
         Health health = healthIndicator.health();
 
@@ -117,11 +128,11 @@ class PgCacheHealthIndicatorTest {
         when(cacheManager.getCache("testCache")).thenReturn(cache);
         when(cache.size()).thenReturn(10L);
         // 80 hits, 20 misses = 80% hit rate
-        when(cache.getStatistics()).thenReturn(new CacheStatistics(80, 20, 50, 5));
+        when(cacheManager.getStoreStatistics()).thenReturn(singleStoreStats(new CacheStatistics(80, 20, 50, 5)));
 
         Health health = healthIndicator.health();
 
         assertEquals(Status.UP, health.getStatus());
-        assertEquals("80.00%", health.getDetails().get("stats.hitRate"));
+        assertEquals("80.00%", health.getDetails().get("stats." + STORE_KEY + ".hitRate"));
     }
 }

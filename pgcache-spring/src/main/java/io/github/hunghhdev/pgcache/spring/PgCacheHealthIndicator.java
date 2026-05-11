@@ -31,47 +31,40 @@ public class PgCacheHealthIndicator implements HealthIndicator {
     public Health health() {
         try {
             Health.Builder builder = Health.up();
-            
             Map<String, Object> details = new LinkedHashMap<>();
             details.put("cache.count", cacheManager.getCacheCount());
             details.put("cache.names", cacheManager.getCacheNames());
-            
-            // Test cache operations and gather statistics
-            long totalSize = 0;
-            CacheStatistics aggregatedStats = null;
 
+            long totalSize = 0;
             for (String cacheName : cacheManager.getCacheNames()) {
                 try {
-                    PgCache cache = (PgCache) cacheManager.getCache(cacheName);
-                    if (cache != null) {
-                        long cacheSize = cache.size();
+                    org.springframework.cache.Cache cache = cacheManager.getCache(cacheName);
+                    if (cache instanceof PgCache) {
+                        long cacheSize = ((PgCache) cache).size();
                         totalSize += cacheSize;
                         details.put("cache." + cacheName + ".size", cacheSize);
-
-                        // Get statistics from first cache (shared across all)
-                        if (aggregatedStats == null) {
-                            aggregatedStats = cache.getStatistics();
-                        }
+                    } else if (cache != null) {
+                        details.put("cache." + cacheName + ".type", cache.getClass().getSimpleName());
                     }
                 } catch (Exception e) {
                     logger.warn("Failed to get info for cache '{}': {}", cacheName, e.getMessage());
                     details.put("cache." + cacheName + ".error", e.getMessage());
                 }
             }
-
             details.put("cache.total.size", totalSize);
 
-            // Add statistics if available
-            if (aggregatedStats != null) {
-                details.put("stats.hits", aggregatedStats.getHitCount());
-                details.put("stats.misses", aggregatedStats.getMissCount());
-                details.put("stats.hitRate", String.format("%.2f%%", aggregatedStats.getHitRate() * 100));
-                details.put("stats.puts", aggregatedStats.getPutCount());
-                details.put("stats.evictions", aggregatedStats.getEvictionCount());
-            }
-            
+            // Per-store statistics (each store is shared by all caches with matching config)
+            cacheManager.getStoreStatistics().forEach((storeKey, stats) -> {
+                String prefix = "stats." + storeKey + ".";
+                details.put(prefix + "hits", stats.getHitCount());
+                details.put(prefix + "misses", stats.getMissCount());
+                details.put(prefix + "hitRate", String.format("%.2f%%", stats.getHitRate() * 100));
+                details.put(prefix + "puts", stats.getPutCount());
+                details.put(prefix + "evictions", stats.getEvictionCount());
+            });
+
             return builder.withDetails(details).build();
-            
+
         } catch (Exception e) {
             logger.error("PgCache health check failed: {}", e.getMessage());
             return Health.down()
