@@ -65,18 +65,6 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         "((ttl_policy = 'ABSOLUTE' OR ttl_policy IS NULL) AND (updated_at + (ttl_seconds * interval '1 second')) <= now()) " +
         "OR (ttl_policy = 'SLIDING' AND ((COALESCE(last_accessed, updated_at)) + (ttl_seconds * interval '1 second')) <= now())))";
 
-    private final DataSource dataSource;
-    private final ObjectMapper objectMapper;
-    private final String tableName;
-    private final long cleanupIntervalMinutes;
-    private final boolean allowNullValues;
-    private final Executor asyncExecutor;
-    private final CacheEventDispatcher eventDispatcher;
-    private volatile ScheduledExecutorService cleanupExecutor;
-    
-    // Thread-safe initialization flag using double-checked locking pattern
-    private volatile boolean tableInitialized = false;
-
     // Connection retry configuration
     private static final int MAX_RETRY_ATTEMPTS = 3;
     private static final int RETRY_DELAY_MS = 100;
@@ -85,11 +73,34 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     private static final long DEFAULT_CLEANUP_INTERVAL_MINUTES = 5;
     private static final long SHUTDOWN_AWAIT_SECONDS = 5;
 
+    // Size-cache TTL
+    private static final Duration SIZE_CACHE_DURATION = Duration.ofSeconds(5);
+
+    // Core dependencies
+    private final DataSource dataSource;
+    private final ObjectMapper objectMapper;
+    private final String tableName;
+    private final long cleanupIntervalMinutes;
+    private final boolean allowNullValues;
+    private final Executor asyncExecutor;
+    private final CacheEventDispatcher eventDispatcher;
+    private final List<CacheEventListener> eventListeners;
+
+    // Background cleanup
+    private volatile ScheduledExecutorService cleanupExecutor;
+
+    // Thread-safe initialization flag using double-checked locking pattern
+    private volatile boolean tableInitialized = false;
+
     // Statistics counters
     private final AtomicLong hitCount = new AtomicLong(0);
     private final AtomicLong missCount = new AtomicLong(0);
     private final AtomicLong putCount = new AtomicLong(0);
     private final AtomicLong evictionCount = new AtomicLong(0);
+
+    // Cache for size() method to avoid expensive full table scans
+    private volatile int cachedSize = -1;
+    private volatile Instant lastSizeUpdate = Instant.MIN;
 
     /**
      * Creates a PgCacheStore with specified dataSource.
@@ -332,11 +343,6 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         eventDispatcher.fireOnClear();
     }
 
-    // Cache for size() method to avoid expensive full table scans
-    private volatile int cachedSize = -1;
-    private volatile Instant lastSizeUpdate = Instant.MIN;
-    private static final Duration SIZE_CACHE_DURATION = Duration.ofSeconds(5);
-
     @Override
     public int size() {
         if (cachedSize >= 0 && 
@@ -557,9 +563,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
     }
 
-    private final List<CacheEventListener> eventListeners;
-
-    private PgCacheStore(DataSource dataSource, ObjectMapper objectMapper, String tableName, boolean autoCreateTable, 
+    private PgCacheStore(DataSource dataSource, ObjectMapper objectMapper, String tableName, boolean autoCreateTable,
                          boolean enableBackgroundCleanup, long cleanupIntervalMinutes, boolean allowNullValues,
                          List<CacheEventListener> eventListeners, Executor asyncExecutor) {
         this.dataSource = dataSource;
