@@ -3,6 +3,7 @@ package io.github.hunghhdev.pgcache.spring;
 import io.github.hunghhdev.pgcache.core.CacheStatistics;
 import io.github.hunghhdev.pgcache.core.NullValueMarker;
 import io.github.hunghhdev.pgcache.core.PgCacheStore;
+import io.github.hunghhdev.pgcache.core.SqlPatterns;
 import io.github.hunghhdev.pgcache.core.TTLPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -277,7 +278,7 @@ public class PgCache implements Cache {
     @Override
     public void clear() {
         try {
-            cacheStore.evictByPattern(name + ":%");
+            cacheStore.evictByPattern(scopedLikePrefix() + "%");
             logger.debug("Cleared cache '{}'", name);
         } catch (Exception e) {
             logger.error("Failed to clear cache '{}': {}", name, e.getMessage());
@@ -290,7 +291,7 @@ public class PgCache implements Cache {
      */
     public long size() {
         try {
-            return cacheStore.getKeys(name + ":%").size();
+            return cacheStore.size(scopedLikePrefix() + "%");
         } catch (Exception e) {
             logger.warn("Failed to get size of cache '{}': {}", name, e.getMessage());
             return 0;
@@ -495,8 +496,8 @@ public class PgCache implements Cache {
         }
 
         try {
-            // Prefix pattern with cache name for scoped eviction
-            String scopedPattern = name + ":" + pattern;
+            // Prefix pattern with cache name (escaped) for scoped eviction
+            String scopedPattern = scopedLikePrefix() + pattern;
             int evicted = cacheStore.evictByPattern(scopedPattern);
             logger.debug("Evicted {} entries from cache '{}' matching pattern '{}'", evicted, name, pattern);
             return evicted;
@@ -511,6 +512,14 @@ public class PgCache implements Cache {
      */
     private String toKeyString(Object key) {
         return name + ":" + key.toString();
+    }
+
+    /**
+     * Returns the cache-scoped prefix with SQL LIKE meta-characters in the cache name escaped.
+     * Use to build patterns like {@code scopedLikePrefix() + "%"} for store-wide queries.
+     */
+    private String scopedLikePrefix() {
+        return SqlPatterns.escapeLikePattern(name) + ":";
     }
     
     /**

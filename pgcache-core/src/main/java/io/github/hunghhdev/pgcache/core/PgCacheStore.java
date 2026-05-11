@@ -1208,7 +1208,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             throw new PgCacheException("Pattern cannot be null or empty");
         }
 
-        String sql = "DELETE FROM " + tableName + " WHERE key LIKE ?";
+        String sql = "DELETE FROM " + tableName + " WHERE key LIKE ? ESCAPE '\\'";
 
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -1259,7 +1259,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
 
         String sql = "SELECT key FROM " + tableName +
-                     " WHERE key LIKE ? AND " + NOT_EXPIRED_WHERE_CLAUSE;
+                     " WHERE key LIKE ? ESCAPE '\\' AND " + NOT_EXPIRED_WHERE_CLAUSE;
 
         List<String> keys = new ArrayList<>();
         try (Connection conn = getValidatedConnection();
