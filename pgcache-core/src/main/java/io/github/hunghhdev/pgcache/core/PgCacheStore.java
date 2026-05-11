@@ -86,12 +86,10 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     private final Executor asyncExecutor;
     private final CacheEventDispatcher eventDispatcher;
     private final List<CacheEventListener> eventListeners;
+    private final SchemaManager schemaManager;
 
     // Background cleanup
     private volatile ScheduledExecutorService cleanupExecutor;
-
-    // Thread-safe initialization flag using double-checked locking pattern
-    private volatile boolean tableInitialized = false;
 
     // Statistics counters
     private final AtomicLong hitCount = new AtomicLong(0);
@@ -118,9 +116,10 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         this.eventListeners = new ArrayList<>();
         this.asyncExecutor = ForkJoinPool.commonPool();
         this.eventDispatcher = new CacheEventDispatcher(this.eventListeners);
+        this.schemaManager = new SchemaManager(dataSource, this.tableName);
 
         if (autoCreateTable) {
-            initializeTable();
+            schemaManager.initializeIfNeeded();
         }
     }
 
@@ -134,72 +133,12 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     }
 
     /**
-     * Initializes the cache table in the database if it doesn't exist.
-     * Uses double-checked locking pattern for thread safety.
-     */
-    private void initializeTable() {
-        // First check without synchronization for performance
-        if (!tableInitialized) {
-            synchronized (this) {
-                // Second check with synchronization to ensure only one thread initializes
-                if (!tableInitialized) {
-                    performTableInitialization();
-                    tableInitialized = true;
-                }
-            }
-        }
-    }
-
-    /**
-     * Performs the actual table initialization logic.
-     * This method is called only once and only from synchronized context.
-     */
-    private void performTableInitialization() {
-        try (Connection conn = getValidatedConnection();
-             Statement stmt = conn.createStatement()) {
-
-            // Check if table already exists
-            boolean tableExists = false;
-            try (ResultSet rs = conn.getMetaData().getTables(null, getTableSchemaName(), getTableIdentifierName(), new String[] {"TABLE"})) {
-                tableExists = rs.next();
-            }
-
-            // Create table with dynamic UNLOGGED option
-            stmt.execute(createTableSql());
-
-            // Create GIN index on value column for JSONB data
-            stmt.execute(createGinIndexSql());
-            // Create TTL index for efficient expiration queries
-            stmt.execute(createTtlIndexSql());
-            // Create sliding TTL index for efficient sliding TTL queries
-            stmt.execute(createSlidingTtlIndexSql());
-
-            // Log table creation status
-            if (!tableExists) {
-                logger.info("UNLOGGED table '{}' was created successfully", tableName);
-            } else {
-                logger.debug("Table '{}' already exists, skipping creation", tableName);
-            }
-        } catch (SQLException e) {
-            logger.error("Failed to initialize cache table", e);
-            throw new PgCacheException("Failed to initialize cache table", e);
-        }
-    }
-
-    /**
      * Checks if the table exists in the database.
      *
      * @return true if the table exists, false otherwise
      */
     public boolean tableExists() {
-        try (Connection conn = getValidatedConnection()) {
-            try (ResultSet tables = conn.getMetaData().getTables(
-                    null, getTableSchemaName(), getTableIdentifierName(), new String[] {"TABLE"})) {
-                return tables.next();
-            }
-        } catch (SQLException e) {
-            throw new PgCacheException("Failed to check if table exists", e);
-        }
+        return schemaManager.tableExists();
     }
 
     @Override
@@ -606,11 +545,12 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         this.eventListeners = eventListeners != null ? new ArrayList<>(eventListeners) : new ArrayList<>();
         this.asyncExecutor = asyncExecutor != null ? asyncExecutor : ForkJoinPool.commonPool();
         this.eventDispatcher = new CacheEventDispatcher(this.eventListeners);
+        this.schemaManager = new SchemaManager(dataSource, this.tableName);
 
         if (autoCreateTable) {
-            initializeTable();
+            schemaManager.initializeIfNeeded();
         }
-        
+
         if (enableBackgroundCleanup) {
             startBackgroundCleanup();
             registerShutdownHook();
@@ -1305,34 +1245,6 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         return CompletableFuture.runAsync(() -> evict(key), asyncExecutor);
     }
 
-    private String createTableSql() {
-        return "CREATE UNLOGGED TABLE IF NOT EXISTS " + tableName + " (" +
-               "  key TEXT PRIMARY KEY, " +
-               "  value JSONB NOT NULL, " +
-               "  updated_at TIMESTAMP DEFAULT now(), " +
-               "  ttl_seconds INT, " +
-               "  ttl_policy VARCHAR(10) DEFAULT 'ABSOLUTE', " +
-               "  last_accessed TIMESTAMP DEFAULT now()" +
-               ")";
-    }
-
-    private String createGinIndexSql() {
-        return "CREATE INDEX IF NOT EXISTS " + tableName + "_value_gin_idx " +
-               "ON " + tableName + " USING GIN (value jsonb_path_ops)";
-    }
-
-    private String createTtlIndexSql() {
-        return "CREATE INDEX IF NOT EXISTS " + tableName + "_ttl_idx " +
-               "ON " + tableName + " (updated_at, ttl_seconds) " +
-               "WHERE ttl_seconds IS NOT NULL";
-    }
-
-    private String createSlidingTtlIndexSql() {
-        return "CREATE INDEX IF NOT EXISTS " + tableName + "_sliding_ttl_idx " +
-               "ON " + tableName + " (ttl_policy, last_accessed) " +
-               "WHERE ttl_policy = 'SLIDING'";
-    }
-
     private int normalizeTtlSeconds(Duration ttl) {
         if (ttl == null || ttl.isNegative() || ttl.isZero()) {
             throw new PgCacheException("TTL must be positive");
@@ -1347,16 +1259,6 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
 
         return (int) ttlSeconds;
-    }
-
-    private String getTableSchemaName() {
-        int separatorIndex = tableName.indexOf('.');
-        return separatorIndex >= 0 ? tableName.substring(0, separatorIndex) : null;
-    }
-
-    private String getTableIdentifierName() {
-        int separatorIndex = tableName.indexOf('.');
-        return separatorIndex >= 0 ? tableName.substring(separatorIndex + 1) : tableName;
     }
 
     private static boolean isValidTableName(String tableName) {
