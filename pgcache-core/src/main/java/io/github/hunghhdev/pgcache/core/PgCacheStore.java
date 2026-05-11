@@ -22,6 +22,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.sql.DataSource;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -239,7 +240,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             putCount.incrementAndGet();
             invalidateSizeCache();
             fireOnPut(key, value);
-        } catch (Exception e) {
+        } catch (SQLException | JsonProcessingException e) {
             throw new PgCacheException("Failed to put value in cache", e);
         }
     }
@@ -282,7 +283,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             putCount.incrementAndGet();
             invalidateSizeCache();
             fireOnPut(key, value);
-        } catch (Exception e) {
+        } catch (SQLException | JsonProcessingException e) {
             throw new PgCacheException("Failed to put value in cache", e);
         }
     }
@@ -729,7 +730,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 hitCount.incrementAndGet();
                 return Optional.of(result);
 
-            } catch (Exception e) {
+            } catch (JsonProcessingException e) {
                 throw new PgCacheException("Failed to deserialize cached value", e);
             }
         } catch (SQLException e) {
@@ -925,7 +926,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                     return get(key, Object.class, false);
                 }
             }
-        } catch (Exception e) {
+        } catch (SQLException | JsonProcessingException e) {
             throw new PgCacheException("Failed to putIfAbsent value in cache", e);
         }
     }
@@ -967,7 +968,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
                 return get(key, Object.class, false);
             }
-        } catch (Exception e) {
+        } catch (SQLException | JsonProcessingException e) {
             throw new PgCacheException("Failed to putIfAbsent value in cache", e);
         }
     }
@@ -1020,7 +1021,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
                         T value = objectMapper.readValue(jsonValue, clazz);
                         results.put(key, value);
-                    } catch (Exception e) {
+                    } catch (JsonProcessingException e) {
                         logger.warn("Failed to deserialize value for key '{}': {}", key, e.getMessage());
                     }
                 }
@@ -1088,7 +1089,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             putCount.addAndGet(results.length);
             invalidateSizeCache();
 
-        } catch (Exception e) {
+        } catch (SQLException | JsonProcessingException e) {
             throw new PgCacheException("Failed to put multiple values in cache", e);
         }
     }
@@ -1129,7 +1130,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             putCount.addAndGet(results.length);
             invalidateSizeCache();
 
-        } catch (Exception e) {
+        } catch (SQLException | JsonProcessingException e) {
             throw new PgCacheException("Failed to put multiple values in cache", e);
         }
     }
