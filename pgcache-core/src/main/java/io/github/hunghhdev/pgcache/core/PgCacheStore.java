@@ -198,18 +198,9 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     @Override
     public <T> void put(String key, T value) {
-        if (key == null || key.isEmpty()) {
-            throw new PgCacheException("Cache key cannot be null or empty");
-        }
+        validateKey(key);
         
-        // Handle null values based on allowNullValues setting
-        Object valueToStore = value;
-        if (value == null) {
-            if (!allowNullValues) {
-                throw new PgCacheException("Cache value cannot be null (allowNullValues=false)");
-            }
-            valueToStore = NullValueMarker.getInstance();
-        }
+        Object valueToStore = normalizeValue(value);
 
         // SQL for upsert without TTL (permanent entry)
         String sql = "INSERT INTO " + tableName +
@@ -240,18 +231,9 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     @Override
     public <T> void put(String key, T value, Duration ttl, TTLPolicy policy) {
-        if (key == null || key.isEmpty()) {
-            throw new PgCacheException("Cache key cannot be null or empty");
-        }
+        validateKey(key);
         
-        // Handle null values based on allowNullValues setting
-        Object valueToStore = value;
-        if (value == null) {
-            if (!allowNullValues) {
-                throw new PgCacheException("Cache value cannot be null (allowNullValues=false)");
-            }
-            valueToStore = NullValueMarker.getInstance();
-        }
+        Object valueToStore = normalizeValue(value);
         
         if (policy == null) {
             throw new PgCacheException("TTL policy cannot be null");
@@ -292,9 +274,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     @Override
     public void evict(String key) {
-        if (key == null || key.isEmpty()) {
-            throw new PgCacheException("Cache key cannot be null or empty");
-        }
+        validateKey(key);
 
         String sql = "DELETE FROM " + tableName + " WHERE key = ?";
 
@@ -383,9 +363,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     @Override
     public boolean containsKey(String key) {
-        if (key == null || key.isEmpty()) {
-            throw new PgCacheException("Cache key cannot be null or empty");
-        }
+        validateKey(key);
 
         String sql = "SELECT 1 FROM " + tableName +
                      " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE + " LIMIT 1";
@@ -691,9 +669,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     @Override
     public <T> Optional<T> get(String key, Class<T> clazz, boolean refreshTTL) {
-        if (key == null || key.isEmpty()) {
-            throw new PgCacheException("Cache key cannot be null or empty");
-        }
+        validateKey(key);
 
         String sql = "SELECT value, updated_at, ttl_seconds, ttl_policy, last_accessed FROM " + tableName +
                      " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE;
@@ -776,9 +752,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     @Override
     public Optional<Duration> getRemainingTTL(String key) {
-        if (key == null || key.isEmpty()) {
-            throw new PgCacheException("Cache key cannot be null or empty");
-        }
+        validateKey(key);
 
         String sql = "SELECT updated_at, ttl_seconds, ttl_policy, last_accessed FROM " + tableName +
                      " WHERE key = ?";
@@ -834,9 +808,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     @Override
     public Optional<TTLPolicy> getTTLPolicy(String key) {
-        if (key == null || key.isEmpty()) {
-            throw new PgCacheException("Cache key cannot be null or empty");
-        }
+        validateKey(key);
 
         String sql = "SELECT ttl_policy FROM " + tableName + " WHERE key = ?";
 
@@ -869,9 +841,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     @Override
     public boolean refreshTTL(String key, Duration newTtl) {
-        if (key == null || key.isEmpty()) {
-            throw new PgCacheException("Cache key cannot be null or empty");
-        }
+        validateKey(key);
         int ttlSeconds = normalizeTtlSeconds(newTtl);
 
         // First try to update existing entry (may include permanent entries)
@@ -903,18 +873,9 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     @Override
     public <T> Optional<Object> putIfAbsent(String key, T value, Duration ttl, TTLPolicy policy) {
-        if (key == null || key.isEmpty()) {
-            throw new PgCacheException("Cache key cannot be null or empty");
-        }
+        validateKey(key);
 
-        // Handle null values based on allowNullValues setting
-        Object valueToStore = value;
-        if (value == null) {
-            if (!allowNullValues) {
-                throw new PgCacheException("Cache value cannot be null (allowNullValues=false)");
-            }
-            valueToStore = NullValueMarker.getInstance();
-        }
+        Object valueToStore = normalizeValue(value);
 
         if (policy == null) {
             throw new PgCacheException("TTL policy cannot be null");
@@ -970,18 +931,9 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     @Override
     public <T> Optional<Object> putIfAbsent(String key, T value) {
-        if (key == null || key.isEmpty()) {
-            throw new PgCacheException("Cache key cannot be null or empty");
-        }
+        validateKey(key);
 
-        // Handle null values based on allowNullValues setting
-        Object valueToStore = value;
-        if (value == null) {
-            if (!allowNullValues) {
-                throw new PgCacheException("Cache value cannot be null (allowNullValues=false)");
-            }
-            valueToStore = NullValueMarker.getInstance();
-        }
+        Object valueToStore = normalizeValue(value);
 
         // Atomic insert for permanent entry
         try (Connection conn = getValidatedConnection()) {
@@ -1124,14 +1076,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                     continue;
                 }
 
-                // Handle null values
-                Object valueToStore = value;
-                if (value == null) {
-                    if (!allowNullValues) {
-                        throw new PgCacheException("Cache value cannot be null (allowNullValues=false)");
-                    }
-                    valueToStore = NullValueMarker.getInstance();
-                }
+                Object valueToStore = normalizeValue(value);
 
                 String jsonValue = objectMapper.writeValueAsString(valueToStore);
 
@@ -1174,13 +1119,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                     continue;
                 }
 
-                Object valueToStore = value;
-                if (value == null) {
-                    if (!allowNullValues) {
-                        throw new PgCacheException("Cache value cannot be null (allowNullValues=false)");
-                    }
-                    valueToStore = NullValueMarker.getInstance();
-                }
+                Object valueToStore = normalizeValue(value);
 
                 String jsonValue = objectMapper.writeValueAsString(valueToStore);
 
@@ -1404,5 +1343,21 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
 
         return true;
+    }
+
+    private static void validateKey(String key) {
+        if (key == null || key.isEmpty()) {
+            throw new PgCacheException("Cache key cannot be null or empty");
+        }
+    }
+
+    private Object normalizeValue(Object value) {
+        if (value == null) {
+            if (!allowNullValues) {
+                throw new PgCacheException("Cache value cannot be null (allowNullValues=false)");
+            }
+            return NullValueMarker.getInstance();
+        }
+        return value;
     }
 }
