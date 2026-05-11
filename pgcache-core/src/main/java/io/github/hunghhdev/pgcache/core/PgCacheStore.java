@@ -709,18 +709,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 Object rawResult = objectMapper.readValue(jsonValue, Object.class);
 
                 // Check if this is a null marker
-                if (allowNullValues && rawResult instanceof java.util.Map) {
+                if (allowNullValues && NullValueMarker.isMarker(rawResult)) {
                     @SuppressWarnings("unchecked")
-                    java.util.Map<String, Object> map = (java.util.Map<String, Object>) rawResult;
-                    // NullValueMarker has a "marker" property with value "NULL_MARKER"
-                    if (map.size() == 1 && "NULL_MARKER".equals(map.get("marker"))) {
-                        // Return the marker so caller can distinguish from cache miss
-                        // Caller (e.g., Spring Cache wrapper) should check for this and handle accordingly
-                        @SuppressWarnings("unchecked")
-                        T marker = (T) NullValueMarker.getInstance();
-                        hitCount.incrementAndGet();
-                        return Optional.of(marker);
-                    }
+                    T marker = (T) NullValueMarker.getInstance();
+                    hitCount.incrementAndGet();
+                    return Optional.of(marker);
                 }
 
                 // Normal deserialization with the requested type
@@ -1010,15 +1003,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                         Object rawResult = objectMapper.readValue(jsonValue, Object.class);
 
                         // Handle null marker
-                        if (allowNullValues && rawResult instanceof java.util.Map) {
+                        if (allowNullValues && NullValueMarker.isMarker(rawResult)) {
                             @SuppressWarnings("unchecked")
-                            java.util.Map<String, Object> map = (java.util.Map<String, Object>) rawResult;
-                            if (map.size() == 1 && "NULL_MARKER".equals(map.get("marker"))) {
-                                @SuppressWarnings("unchecked")
-                                T marker = (T) NullValueMarker.getInstance();
-                                results.put(key, marker);
-                                continue;
-                            }
+                            T marker = (T) NullValueMarker.getInstance();
+                            results.put(key, marker);
+                            continue;
                         }
 
                         T value = objectMapper.readValue(jsonValue, clazz);
