@@ -569,7 +569,16 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                          List<CacheEventListener> eventListeners, Executor asyncExecutor) {
         this.dataSource = dataSource;
         this.objectMapper = objectMapper;
-        this.tableName = tableName != null && !tableName.trim().isEmpty() ? tableName.trim() : DEFAULT_TABLE_NAME;
+        if (tableName == null || tableName.trim().isEmpty()) {
+            this.tableName = DEFAULT_TABLE_NAME;
+        } else {
+            String trimmed = tableName.trim();
+            if (!isValidTableName(trimmed)) {
+                throw new IllegalArgumentException(
+                    "tableName must be a valid SQL identifier or schema-qualified identifier (letters, digits, underscores only)");
+            }
+            this.tableName = trimmed;
+        }
         this.cleanupIntervalMinutes = cleanupIntervalMinutes;
         this.allowNullValues = allowNullValues;
         this.eventListeners = eventListeners != null ? new ArrayList<>(eventListeners) : new ArrayList<>();
