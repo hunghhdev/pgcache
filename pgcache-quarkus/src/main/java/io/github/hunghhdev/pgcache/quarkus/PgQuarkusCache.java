@@ -2,6 +2,7 @@ package io.github.hunghhdev.pgcache.quarkus;
 
 import io.github.hunghhdev.pgcache.core.NullValueMarker;
 import io.github.hunghhdev.pgcache.core.PgCacheStore;
+import io.github.hunghhdev.pgcache.core.SqlPatterns;
 import io.github.hunghhdev.pgcache.core.TTLPolicy;
 import io.quarkus.cache.Cache;
 import io.smallrye.mutiny.Uni;
@@ -119,7 +120,7 @@ public class PgQuarkusCache implements Cache {
     public Uni<Void> invalidateAll() {
         // Clear is still sync in core, so run on worker pool
         return Uni.createFrom().item(() -> {
-            cacheStore.evictByPattern(name + ":%");
+            cacheStore.evictByPattern(scopedLikePrefix() + "%");
             logger.debug("Invalidated all entries from cache '{}'", name);
             return (Void) null;
         })
@@ -130,7 +131,7 @@ public class PgQuarkusCache implements Cache {
     public Uni<Void> invalidateIf(Predicate<Object> predicate) {
         // Complex invalidation, run on worker pool
         return Uni.createFrom().item(() -> {
-            String pattern = name + ":%";
+            String pattern = scopedLikePrefix() + "%";
             Collection<String> scopedKeys = cacheStore.getKeys(pattern);
             Collection<String> keysToEvict = scopedKeys.stream()
                     .filter(scopedKey -> predicate.test(toOriginalKey(scopedKey)))
@@ -159,7 +160,7 @@ public class PgQuarkusCache implements Cache {
     }
 
     public long size() {
-        return cacheStore.getKeys(name + ":%").size();
+        return cacheStore.size(scopedLikePrefix() + "%");
     }
 
     public void cleanupExpired() {
@@ -181,6 +182,10 @@ public class PgQuarkusCache implements Cache {
 
     private String toKeyString(Object key) {
         return name + ":" + key.toString();
+    }
+
+    private String scopedLikePrefix() {
+        return SqlPatterns.escapeLikePattern(name) + ":";
     }
 
     private String toOriginalKey(String scopedKey) {
