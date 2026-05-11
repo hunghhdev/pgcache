@@ -2,6 +2,7 @@ package io.github.hunghhdev.pgcache.spring;
 
 import io.github.hunghhdev.pgcache.core.CacheStatistics;
 import io.github.hunghhdev.pgcache.core.NullValueMarker;
+import io.github.hunghhdev.pgcache.core.PgCacheException;
 import io.github.hunghhdev.pgcache.core.PgCacheStore;
 import io.github.hunghhdev.pgcache.core.SqlPatterns;
 import io.github.hunghhdev.pgcache.core.TTLPolicy;
@@ -59,64 +60,43 @@ public class PgCache implements Cache {
         if (key == null) {
             return null;
         }
-
         try {
             String keyStr = toKeyString(key);
-            // Always refresh TTL - let the core decide based on the entry's TTL policy
             Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, true);
-
             if (!optionalValue.isPresent()) {
                 return null;
             }
-
             Object value = optionalValue.get();
-            // Check for null marker - indicates cached null value
             if (value instanceof NullValueMarker) {
                 return new SimpleValueWrapper(null);
             }
-
             return new SimpleValueWrapper(value);
         } catch (Exception e) {
-            if (e instanceof IllegalArgumentException) {
-                logger.warn("Failed to get value from cache '{}' for key '{}': {}", name, key, e.getMessage());
-                return null;
-            }
-
             logger.warn("Failed to get value from cache '{}' for key '{}': {}", name, key, e.getMessage());
-            throw new RuntimeException("Cache get operation failed", e);
+            return null;
         }
     }
     
     @Override
-    @SuppressWarnings("unchecked")
     public <T> T get(Object key, Class<T> type) {
         if (key == null) {
             return null;
         }
-
         try {
             String keyStr = toKeyString(key);
             Optional<T> optionalValue = cacheStore.get(keyStr, type, true);
             if (!optionalValue.isPresent()) {
                 return null;
             }
-
             T value = optionalValue.get();
             if (value instanceof NullValueMarker) {
                 return null;
             }
-
             return value;
         } catch (Exception e) {
-            if (type == null) {
-                logger.warn("Failed to get value from cache '{}' for key '{}' with type {}: {}",
-                           name, key, safeTypeName(type), e.getMessage());
-                return null;
-            }
-
             logger.warn("Failed to get value from cache '{}' for key '{}' with type {}: {}",
                        name, key, safeTypeName(type), e.getMessage());
-            throw new RuntimeException("Cache get operation failed", e);
+            return null;
         }
     }
     
@@ -164,7 +144,7 @@ public class PgCache implements Cache {
             throw e;
         } catch (Exception e) {
             logger.error("Failed to get/load value from cache '{}' for key '{}': {}", name, key, e.getMessage());
-            throw new RuntimeException("Cache operation failed", e);
+            throw new PgCacheException("Cache operation failed for cache '" + name + "'", e);
         }
     }
     
@@ -190,7 +170,7 @@ public class PgCache implements Cache {
             logger.debug("Put value in cache '{}' for key '{}'", name, key);
         } catch (Exception e) {
             logger.error("Failed to put value in cache '{}' for key '{}': {}", name, key, e.getMessage());
-            throw new RuntimeException("Cache put operation failed", e);
+            throw new PgCacheException("Cache put operation failed for cache '" + name + "'", e);
         }
     }
     
@@ -230,7 +210,7 @@ public class PgCache implements Cache {
 
         } catch (Exception e) {
             logger.error("Failed to putIfAbsent value in cache '{}' for key '{}': {}", name, key, e.getMessage());
-            throw new RuntimeException("Cache putIfAbsent operation failed", e);
+            throw new PgCacheException("Cache putIfAbsent operation failed for cache '" + name + "'", e);
         }
     }
     
@@ -239,13 +219,13 @@ public class PgCache implements Cache {
         if (key == null) {
             return;
         }
-        
         try {
             String keyStr = toKeyString(key);
             cacheStore.evict(keyStr);
             logger.debug("Evicted key '{}' from cache '{}'", key, name);
         } catch (Exception e) {
-            logger.warn("Failed to evict key '{}' from cache '{}': {}", key, name, e.getMessage());
+            logger.error("Failed to evict key '{}' from cache '{}': {}", key, name, e.getMessage());
+            throw new PgCacheException("Cache evict operation failed for cache '" + name + "'", e);
         }
     }
     
@@ -282,7 +262,7 @@ public class PgCache implements Cache {
             logger.debug("Cleared cache '{}'", name);
         } catch (Exception e) {
             logger.error("Failed to clear cache '{}': {}", name, e.getMessage());
-            throw new RuntimeException("Cache clear operation failed", e);
+            throw new PgCacheException("Cache clear operation failed for cache '" + name + "'", e);
         }
     }
     
