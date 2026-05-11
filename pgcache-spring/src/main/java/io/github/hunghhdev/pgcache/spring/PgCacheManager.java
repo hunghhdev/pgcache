@@ -38,6 +38,7 @@ public class PgCacheManager implements CacheManager, DisposableBean {
     private final ConcurrentMap<String, StoreConfigurationKey> cacheToStoreKey = new ConcurrentHashMap<>();
     private final List<CacheEventListener> eventListeners;
     private final List<Consumer<PgCache>> cacheCreatedListeners = new CopyOnWriteArrayList<>();
+    private final Object adminLock = new Object();
     
     /**
      * Create a new PgCacheManager with default configuration.
@@ -67,8 +68,20 @@ public class PgCacheManager implements CacheManager, DisposableBean {
         if (name == null) {
             throw new IllegalArgumentException("Cache name cannot be null");
         }
-        
-        return cacheMap.computeIfAbsent(name, this::createCache);
+
+        Cache cached = cacheMap.get(name);
+        if (cached != null) {
+            return cached;
+        }
+        synchronized (adminLock) {
+            cached = cacheMap.get(name);
+            if (cached != null) {
+                return cached;
+            }
+            Cache created = createCache(name);
+            cacheMap.put(name, created);
+            return created;
+        }
     }
     
     @Override
@@ -89,28 +102,14 @@ public class PgCacheManager implements CacheManager, DisposableBean {
         if (configuration == null) {
             throw new IllegalArgumentException("Configuration cannot be null");
         }
-        
-        cacheConfigurations.put(cacheName, configuration);
 
-        // If cache already exists, remove it (will be recreated on next get)
-        Cache existingCache = cacheMap.remove(cacheName);
-        if (existingCache != null) {
-            // Decrement usage count for old store
-            StoreConfigurationKey oldStoreKey = cacheToStoreKey.remove(cacheName);
-            if (oldStoreKey != null) {
-                storeUsageCount.computeIfPresent(oldStoreKey, (k, count) -> {
-                    int newCount = count - 1;
-                    if (newCount <= 0) {
-                        PgCacheStore store = storeMap.remove(k);
-                        if (store != null) {
-                            store.close();
-                        }
-                        return null;
-                    }
-                    return newCount;
-                });
+        synchronized (adminLock) {
+            cacheConfigurations.put(cacheName, configuration);
+            Cache existingCache = cacheMap.remove(cacheName);
+            if (existingCache != null) {
+                decrementStoreUsage(cacheToStoreKey.remove(cacheName));
+                logger.info("Recreating cache '{}' with new configuration", cacheName);
             }
-            logger.info("Recreating cache '{}' with new configuration", cacheName);
         }
     }
     
@@ -124,37 +123,40 @@ public class PgCacheManager implements CacheManager, DisposableBean {
         if (cacheName == null) {
             return false;
         }
-
-        Cache removed = cacheMap.remove(cacheName);
-        cacheConfigurations.remove(cacheName);
-
-        StoreConfigurationKey storeKey = cacheToStoreKey.remove(cacheName);
-        if (storeKey != null) {
-            storeUsageCount.computeIfPresent(storeKey, (k, count) -> {
-                int newCount = count - 1;
-                if (newCount <= 0) {
-                    PgCacheStore store = storeMap.remove(k);
-                    if (store != null) {
-                        store.close();
-                        logger.debug("Closed and removed store for key: {}", k);
-                    }
-                    return null;
-                }
-                return newCount;
-            });
-        }
-
-        if (removed != null) {
+        synchronized (adminLock) {
+            Cache existing = cacheMap.get(cacheName);
+            if (existing == null) {
+                return false;
+            }
             try {
-                removed.clear();
-                logger.info("Removed and cleared cache '{}'", cacheName);
-                return true;
+                existing.clear();
+                logger.info("Cleared cache '{}' during removal", cacheName);
             } catch (Exception e) {
                 logger.warn("Failed to clear cache '{}' during removal: {}", cacheName, e.getMessage());
             }
+            cacheMap.remove(cacheName);
+            cacheConfigurations.remove(cacheName);
+            decrementStoreUsage(cacheToStoreKey.remove(cacheName));
+            return true;
         }
+    }
 
-        return false;
+    private void decrementStoreUsage(StoreConfigurationKey storeKey) {
+        if (storeKey == null) {
+            return;
+        }
+        storeUsageCount.computeIfPresent(storeKey, (k, count) -> {
+            int newCount = count - 1;
+            if (newCount <= 0) {
+                PgCacheStore store = storeMap.remove(k);
+                if (store != null) {
+                    store.close();
+                    logger.debug("Closed and removed store for key: {}", k);
+                }
+                return null;
+            }
+            return newCount;
+        });
     }
     
     /**
