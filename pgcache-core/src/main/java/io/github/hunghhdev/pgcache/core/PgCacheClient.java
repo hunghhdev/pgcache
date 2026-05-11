@@ -98,6 +98,23 @@ public interface PgCacheClient {
     int size();
 
     /**
+     * Counts non-expired keys matching the given SQL LIKE pattern.
+     *
+     * <p>Default implementation materializes all matching keys via {@link #getKeys(String)},
+     * then returns the size — correct but O(N) memory. Implementations should override with
+     * an efficient {@code COUNT} query.</p>
+     *
+     * <p>Unlike {@link #size()}, this method does not cache results.</p>
+     *
+     * @param pattern SQL LIKE pattern (use {@code %} for any chars)
+     * @return number of non-expired matching keys
+     * @since 1.7.0
+     */
+    default int size(String pattern) {
+        return getKeys(pattern).size();
+    }
+
+    /**
      * Checks if the cache contains a non-expired entry for the given key.
      * This is more efficient than get() as it doesn't deserialize the value.
      * 

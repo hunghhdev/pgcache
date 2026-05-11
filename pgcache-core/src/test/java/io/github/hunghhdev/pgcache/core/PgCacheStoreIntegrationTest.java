@@ -356,6 +356,28 @@ class PgCacheStoreIntegrationTest {
         assertTrue(cacheStore.get("evict-all-3", TestUser.class).isPresent());
     }
 
+    // ==================== Size by pattern (v1.7.0) ====================
+
+    @Test
+    void sizeByPatternCountsMatchingNonExpiredEntries() {
+        cacheStore.put("user:1", new TestUser("alice", 1), Duration.ofMinutes(5));
+        cacheStore.put("user:2", new TestUser("bob", 2), Duration.ofMinutes(5));
+        cacheStore.put("admin:1", new TestUser("root", 99), Duration.ofMinutes(5));
+
+        assertEquals(2, cacheStore.size("user:%"));
+        assertEquals(1, cacheStore.size("admin:%"));
+        assertEquals(0, cacheStore.size("nonexistent:%"));
+    }
+
+    @Test
+    void sizeByPatternExcludesExpiredEntries() throws InterruptedException {
+        cacheStore.put("expire-test:1", new TestUser("a", 1), Duration.ofSeconds(1));
+        cacheStore.put("expire-test:2", new TestUser("b", 2), Duration.ofMinutes(5));
+        Thread.sleep(1500);
+
+        assertEquals(1, cacheStore.size("expire-test:%"));
+    }
+
     // ==================== Cache Statistics Tests (v1.3.0) ====================
 
     @Test

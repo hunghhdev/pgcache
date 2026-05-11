@@ -373,6 +373,28 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     }
 
     @Override
+    public int size(String pattern) {
+        if (pattern == null || pattern.isEmpty()) {
+            throw new PgCacheException("Pattern cannot be null or empty");
+        }
+
+        String sql = "SELECT COUNT(*) FROM " + tableName +
+                     " WHERE key LIKE ? ESCAPE '\\' AND " + NOT_EXPIRED_WHERE_CLAUSE;
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, pattern);
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        } catch (SQLException e) {
+            throw new PgCacheException("Failed to count entries by pattern: " + pattern, e);
+        }
+    }
+
+    @Override
     public boolean containsKey(String key) {
         validateKey(key);
 
