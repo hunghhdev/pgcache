@@ -29,10 +29,39 @@ public enum TTLPolicy {
     
     /**
      * Returns the default TTL policy for backward compatibility.
-     * 
+     *
      * @return ABSOLUTE policy (maintains v1.0.0 behavior)
      */
     public static TTLPolicy getDefault() {
         return ABSOLUTE;
+    }
+
+    /**
+     * Parses a string into a {@link TTLPolicy}. Case-insensitive.
+     *
+     * @param value the string to parse (may be null)
+     * @return the parsed policy, or empty if value is null/empty/invalid
+     * @since 1.7.0
+     */
+    public static java.util.Optional<TTLPolicy> parse(String value) {
+        if (value == null || value.isEmpty()) {
+            return java.util.Optional.empty();
+        }
+        try {
+            return java.util.Optional.of(valueOf(value.toUpperCase()));
+        } catch (IllegalArgumentException e) {
+            return java.util.Optional.empty();
+        }
+    }
+
+    /**
+     * Parses a string into a {@link TTLPolicy}, defaulting to {@link #ABSOLUTE} on null/invalid input.
+     *
+     * @param value the string to parse (may be null)
+     * @return the parsed policy, or {@link #ABSOLUTE} as fallback
+     * @since 1.7.0
+     */
+    public static TTLPolicy parseOrDefault(String value) {
+        return parse(value).orElse(ABSOLUTE);
     }
 }
