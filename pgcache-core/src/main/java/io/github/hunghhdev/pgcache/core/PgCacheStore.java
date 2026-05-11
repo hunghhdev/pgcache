@@ -81,6 +81,10 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     private static final int MAX_RETRY_ATTEMPTS = 3;
     private static final int RETRY_DELAY_MS = 100;
 
+    // Background cleanup defaults
+    private static final long DEFAULT_CLEANUP_INTERVAL_MINUTES = 5;
+    private static final long SHUTDOWN_AWAIT_SECONDS = 5;
+
     // Statistics counters
     private final AtomicLong hitCount = new AtomicLong(0);
     private final AtomicLong missCount = new AtomicLong(0);
@@ -97,7 +101,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         this.dataSource = dataSource;
         this.objectMapper = new ObjectMapper();
         this.tableName = DEFAULT_TABLE_NAME;
-        this.cleanupIntervalMinutes = 5;
+        this.cleanupIntervalMinutes = DEFAULT_CLEANUP_INTERVAL_MINUTES;
         this.allowNullValues = false;
         this.eventListeners = new ArrayList<>();
         this.asyncExecutor = ForkJoinPool.commonPool();
@@ -433,7 +437,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         private ObjectMapper objectMapper;
         private boolean autoCreateTable = true;
         private boolean enableBackgroundCleanup = false;
-        private long cleanupIntervalMinutes = 5;
+        private long cleanupIntervalMinutes = DEFAULT_CLEANUP_INTERVAL_MINUTES;
         private boolean allowNullValues = false;
         private String tableName = DEFAULT_TABLE_NAME;
         private List<CacheEventListener> eventListeners = new ArrayList<>();
@@ -625,7 +629,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         if (cleanupExecutor != null && !cleanupExecutor.isShutdown()) {
             cleanupExecutor.shutdown();
             try {
-                if (!cleanupExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                if (!cleanupExecutor.awaitTermination(SHUTDOWN_AWAIT_SECONDS, TimeUnit.SECONDS)) {
                     cleanupExecutor.shutdownNow();
                 }
             } catch (InterruptedException e) {
