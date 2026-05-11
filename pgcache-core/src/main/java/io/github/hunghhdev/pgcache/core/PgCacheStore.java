@@ -15,10 +15,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.sql.DataSource;
 
@@ -70,9 +67,9 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     private static final int MAX_RETRY_ATTEMPTS = 3;
     private static final int RETRY_DELAY_MS = 100;
 
-    // Background cleanup defaults
-    private static final long DEFAULT_CLEANUP_INTERVAL_MINUTES = 5;
-    private static final long SHUTDOWN_AWAIT_SECONDS = 5;
+    // Background cleanup defaults (constants live in BackgroundCleanupScheduler)
+    private static final long DEFAULT_CLEANUP_INTERVAL_MINUTES =
+            BackgroundCleanupScheduler.DEFAULT_INTERVAL_MINUTES;
 
     // Size-cache TTL
     private static final Duration SIZE_CACHE_DURATION = Duration.ofSeconds(5);
@@ -81,7 +78,6 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
     private final String tableName;
-    private final long cleanupIntervalMinutes;
     private final boolean allowNullValues;
     private final Executor asyncExecutor;
     private final CacheEventDispatcher eventDispatcher;
@@ -89,7 +85,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     private final SchemaManager schemaManager;
 
     // Background cleanup
-    private volatile ScheduledExecutorService cleanupExecutor;
+    private final BackgroundCleanupScheduler cleanupScheduler;
 
     // Statistics counters
     private final AtomicLong hitCount = new AtomicLong(0);
@@ -111,12 +107,12 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         this.dataSource = dataSource;
         this.objectMapper = new ObjectMapper();
         this.tableName = DEFAULT_TABLE_NAME;
-        this.cleanupIntervalMinutes = DEFAULT_CLEANUP_INTERVAL_MINUTES;
         this.allowNullValues = false;
         this.eventListeners = new ArrayList<>();
         this.asyncExecutor = ForkJoinPool.commonPool();
         this.eventDispatcher = new CacheEventDispatcher(this.eventListeners);
         this.schemaManager = new SchemaManager(dataSource, this.tableName);
+        this.cleanupScheduler = null;  // public ctor doesn't enable background cleanup
 
         if (autoCreateTable) {
             schemaManager.initializeIfNeeded();
@@ -540,7 +536,6 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             }
             this.tableName = trimmed;
         }
-        this.cleanupIntervalMinutes = cleanupIntervalMinutes;
         this.allowNullValues = allowNullValues;
         this.eventListeners = eventListeners != null ? new ArrayList<>(eventListeners) : new ArrayList<>();
         this.asyncExecutor = asyncExecutor != null ? asyncExecutor : ForkJoinPool.commonPool();
@@ -552,19 +547,12 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
 
         if (enableBackgroundCleanup) {
-            startBackgroundCleanup();
-            registerShutdownHook();
+            this.cleanupScheduler = new BackgroundCleanupScheduler(cleanupIntervalMinutes, this::cleanupExpired);
+            cleanupScheduler.start();
+            cleanupScheduler.registerShutdownHook();
+        } else {
+            this.cleanupScheduler = null;
         }
-    }
-
-    /**
-     * Registers a shutdown hook to ensure proper cleanup on JVM shutdown.
-     */
-    private void registerShutdownHook() {
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            logger.info("Shutting down PgCache cleanup executor via shutdown hook...");
-            shutdown();
-        }, "pgcache-shutdown-hook"));
     }
 
     /**
@@ -576,43 +564,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     }
 
     /**
-     * Starts the background cleanup task if enabled.
-     */
-    private void startBackgroundCleanup() {
-        if (cleanupExecutor == null || cleanupExecutor.isShutdown()) {
-            cleanupExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
-                Thread t = new Thread(r, "pgcache-cleanup");
-                t.setDaemon(true);
-                return t;
-            });
-            
-            cleanupExecutor.scheduleWithFixedDelay(() -> {
-                try {
-                    cleanupExpired();
-                } catch (Exception e) {
-                    logger.warn("Background cleanup failed", e);
-                }
-            }, cleanupIntervalMinutes, cleanupIntervalMinutes, TimeUnit.MINUTES);
-            
-            logger.info("Started background cleanup with interval: {} minutes", cleanupIntervalMinutes);
-        }
-    }
-
-    /**
      * Stops the background cleanup task.
      */
     public void shutdown() {
-        if (cleanupExecutor != null && !cleanupExecutor.isShutdown()) {
-            cleanupExecutor.shutdown();
-            try {
-                if (!cleanupExecutor.awaitTermination(SHUTDOWN_AWAIT_SECONDS, TimeUnit.SECONDS)) {
-                    cleanupExecutor.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                cleanupExecutor.shutdownNow();
-            }
-            logger.info("Background cleanup shutdown completed");
+        if (cleanupScheduler != null) {
+            cleanupScheduler.shutdown();
         }
     }
 
