@@ -323,102 +323,49 @@ public class PgCacheManager implements CacheManager, DisposableBean {
     }
     
     /**
-     * Configuration class for individual caches.
+     * @deprecated since 1.7.0, use {@link CacheStoreConfig}. Removed in 2.0.0.
      */
-    public static class PgCacheConfiguration {
-        private final Duration defaultTtl;
-        private final boolean allowNullValues;
-        private final String tableName;
-        private final boolean backgroundCleanupEnabled;
-        private final Duration backgroundCleanupInterval;
-        private final TTLPolicy ttlPolicy;
-        
+    @Deprecated
+    public static class PgCacheConfiguration extends CacheStoreConfig {
+
         public PgCacheConfiguration(Duration defaultTtl, boolean allowNullValues, String tableName,
-                                   boolean backgroundCleanupEnabled, Duration backgroundCleanupInterval,
-                                   TTLPolicy ttlPolicy) {
-            this.defaultTtl = defaultTtl;
-            this.allowNullValues = allowNullValues;
-            this.tableName = tableName != null ? tableName : DEFAULT_TABLE_NAME;
-            this.backgroundCleanupEnabled = backgroundCleanupEnabled;
-            this.backgroundCleanupInterval = backgroundCleanupInterval;
-            this.ttlPolicy = ttlPolicy != null ? ttlPolicy : TTLPolicy.ABSOLUTE;
+                                    boolean backgroundCleanupEnabled, Duration backgroundCleanupInterval,
+                                    TTLPolicy ttlPolicy) {
+            super(defaultTtl, allowNullValues, tableName,
+                  backgroundCleanupEnabled, backgroundCleanupInterval, ttlPolicy);
         }
-        
-        public Duration getDefaultTtl() {
-            return defaultTtl;
-        }
-        
-        public boolean isAllowNullValues() {
-            return allowNullValues;
-        }
-        
-        public String getTableName() {
-            return tableName;
-        }
-        
-        public boolean isBackgroundCleanupEnabled() {
-            return backgroundCleanupEnabled;
-        }
-        
-        public Duration getBackgroundCleanupInterval() {
-            return backgroundCleanupInterval;
-        }
-        
-        public TTLPolicy getTtlPolicy() {
-            return ttlPolicy;
-        }
-        
-        /**
-         * Create a builder for PgCacheConfiguration.
-         */
+
         public static Builder builder() {
             return new Builder();
         }
-        
-        /**
-         * Builder for PgCacheConfiguration.
-         */
-        public static class Builder {
-            private Duration defaultTtl = Duration.ofHours(1); // 1 hour default
-            private boolean allowNullValues = true;
-            private String tableName = DEFAULT_TABLE_NAME;
-            private boolean backgroundCleanupEnabled = false;
-            private Duration backgroundCleanupInterval = Duration.ofMinutes(30);
-            private TTLPolicy ttlPolicy = TTLPolicy.ABSOLUTE;
-            
-            public Builder defaultTtl(Duration defaultTtl) {
-                this.defaultTtl = defaultTtl;
-                return this;
-            }
-            
-            public Builder allowNullValues(boolean allowNullValues) {
-                this.allowNullValues = allowNullValues;
-                return this;
-            }
-            
-            public Builder tableName(String tableName) {
-                this.tableName = tableName;
-                return this;
-            }
-            
-            public Builder backgroundCleanupEnabled(boolean enabled) {
-                this.backgroundCleanupEnabled = enabled;
-                return this;
-            }
-            
-            public Builder backgroundCleanupInterval(Duration interval) {
-                this.backgroundCleanupInterval = interval;
-                return this;
-            }
-            
-            public Builder ttlPolicy(TTLPolicy ttlPolicy) {
-                this.ttlPolicy = ttlPolicy;
-                return this;
-            }
-            
+
+        @Deprecated
+        public static class Builder extends CacheStoreConfig.Builder {
+
+            @Override
+            public Builder defaultTtl(Duration v) { super.defaultTtl(v); return this; }
+            @Override
+            public Builder allowNullValues(boolean v) { super.allowNullValues(v); return this; }
+            @Override
+            public Builder tableName(String v) { super.tableName(v); return this; }
+            @Override
+            public Builder backgroundCleanupEnabled(boolean v) { super.backgroundCleanupEnabled(v); return this; }
+            @Override
+            public Builder backgroundCleanupInterval(Duration v) { super.backgroundCleanupInterval(v); return this; }
+            @Override
+            public Builder ttlPolicy(TTLPolicy v) { super.ttlPolicy(v); return this; }
+
+            @Override
             public PgCacheConfiguration build() {
-                return new PgCacheConfiguration(defaultTtl, allowNullValues, tableName,
-                                               backgroundCleanupEnabled, backgroundCleanupInterval, ttlPolicy);
+                CacheStoreConfig cfg = super.build();
+                return new PgCacheConfiguration(
+                    cfg.getDefaultTtl(),
+                    cfg.isAllowNullValues(),
+                    cfg.getTableName(),
+                    cfg.isBackgroundCleanupEnabled(),
+                    cfg.getBackgroundCleanupInterval(),
+                    cfg.getTtlPolicy()
+                );
             }
         }
     }
