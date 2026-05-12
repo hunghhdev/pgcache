@@ -339,6 +339,16 @@ public class PgCacheManager implements CacheManager, DisposableBean {
             return new Builder();
         }
 
+        /**
+         * Deprecated builder kept for backward compatibility with 1.6.x callers.
+         *
+         * @implNote Extends {@link CacheStoreConfig.Builder} so the {@code static builder()}
+         *     above can hide its parent's {@code static builder()} with a covariant return type.
+         *     Each fluent setter and {@link #build()} is overridden to narrow the return type
+         *     to this subclass / to {@link PgCacheConfiguration}. Removing the {@code extends}
+         *     clause will break {@code builder()} hiding — Java requires covariant return types
+         *     when a subclass hides a parent's static method.
+         */
         @Deprecated
         public static class Builder extends CacheStoreConfig.Builder {
 

@@ -632,10 +632,9 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 Integer ttlSeconds = rs.getObject("ttl_seconds", Integer.class);
                 String ttlPolicyStr = rs.getString("ttl_policy");
 
-                final String keyForLog = key;
                 TTLPolicy ttlPolicy = TTLPolicy.parse(ttlPolicyStr).orElseGet(() -> {
                     if (ttlPolicyStr != null) {
-                        logger.warn("Invalid TTL policy '{}' for key '{}', defaulting to ABSOLUTE", ttlPolicyStr, keyForLog);
+                        logger.warn("Invalid TTL policy '{}' for key '{}', defaulting to ABSOLUTE", ttlPolicyStr, key);
                     }
                     return TTLPolicy.ABSOLUTE;
                 });
@@ -712,10 +711,9 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 java.sql.Timestamp lastAccessedTimestamp = rs.getTimestamp("last_accessed");
                 Instant lastAccessed = lastAccessedTimestamp != null ? lastAccessedTimestamp.toInstant() : updatedAt;
 
-                final String keyForLog2 = key;
                 TTLPolicy ttlPolicy = TTLPolicy.parse(ttlPolicyStr).orElseGet(() -> {
                     if (ttlPolicyStr != null) {
-                        logger.warn("Invalid TTL policy '{}' for key '{}', defaulting to ABSOLUTE", ttlPolicyStr, keyForLog2);
+                        logger.warn("Invalid TTL policy '{}' for key '{}', defaulting to ABSOLUTE", ttlPolicyStr, key);
                     }
                     return TTLPolicy.ABSOLUTE;
                 });
@@ -754,10 +752,9 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 }
 
                 String ttlPolicyStr = rs.getString("ttl_policy");
-                final String keyForLog3 = key;
                 return Optional.of(TTLPolicy.parse(ttlPolicyStr).orElseGet(() -> {
                     if (ttlPolicyStr != null) {
-                        logger.warn("Invalid TTL policy '{}' for key '{}', returning ABSOLUTE", ttlPolicyStr, keyForLog3);
+                        logger.warn("Invalid TTL policy '{}' for key '{}', returning ABSOLUTE", ttlPolicyStr, key);
                     }
                     return TTLPolicy.ABSOLUTE;
                 }));
