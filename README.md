@@ -1,7 +1,7 @@
 # PgCache
 
 [![Java](https://img.shields.io/badge/Java-11%2B-blue.svg)](https://www.oracle.com/java/)
-[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.6.2-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache)
+[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.7.0-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 **A simple caching library that uses your existing PostgreSQL as cache backend.**
@@ -59,21 +59,21 @@ Perfect for small-to-medium applications that want caching without the complexit
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-core</artifactId>
-  <version>1.6.2</version>
+  <version>1.7.0</version>
 </dependency>
 
 <!-- Spring Boot integration -->
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-spring</artifactId>
-  <version>1.6.2</version>
+  <version>1.7.0</version>
 </dependency>
 
 <!-- Quarkus integration -->
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-quarkus</artifactId>
-  <version>1.6.2</version>
+  <version>1.7.0</version>
 </dependency>
 ```
 
@@ -133,7 +133,7 @@ public class UserService {
     PgQuarkusCacheManager cacheManager;
 
     public Uni<User> getUser(Long id) {
-        PgQuarkusCache cache = cacheManager.getOrCreateCache("users");
+        PgQuarkusCache cache = (PgQuarkusCache) cacheManager.getCache("users").get();
         // Uses async API under the hood
         return cache.getAsync("user:" + id, key -> userRepository.findById(id));
     }
@@ -281,6 +281,29 @@ PgCache uses **UNLOGGED tables** (no WAL overhead) and **JSONB** storage for per
 - **Throughput**: Hundreds to low thousands ops/sec
 
 ## Migration
+
+### From 1.6.x to 1.7.0
+
+No database changes required. Backward-compatible release with bug fixes and DRY refactor.
+
+**Bug fixes:**
+- Cache names containing `_` or `%` no longer cause cross-cache eviction (SQL `LIKE` wildcards now escaped).
+- Concurrent `setCacheConfiguration` / `removeCache` / `getCache` no longer racy.
+- `PgCacheManager.removeCache` returns `true` even when post-removal `clear()` fails.
+
+**New API:**
+- `PgCacheClient.size(String pattern)` — efficient `COUNT(*)` size lookup.
+- `TTLPolicy.parse(String)` / `parseOrDefault(String)`.
+- `NullValueMarker.MARKER_VALUE`, `NullValueMarker.isMarker(Object)`.
+- `SqlPatterns.escapeLikePattern(String)`.
+- `PgCacheManager.getStoreStatistics()` — per-store metrics for health endpoints.
+
+**Deprecations (removed in 2.0.0):**
+- `PgCacheStore(DataSource[, boolean])` ctors → use `PgCacheStore.builder()`.
+- `PgCacheManager.PgCacheConfiguration` → use `CacheStoreConfig`.
+- `PgCache.cleanupExpired()` / `PgQuarkusCache.cleanupExpired()` → use `cleanupExpiredAllCaches()`.
+- `PgQuarkusCacheManager.getOrCreateCache(String)` → use `(PgQuarkusCache) getCache(name).get()`.
+- `PgQuarkusCacheManager.CacheConfig`: `isAllowNullValues()` and 3-arg ctor removed; setter changed to `setAllowNullValues(Boolean)` for 3-state semantics.
 
 ### From 1.5.x to 1.6.0
 
