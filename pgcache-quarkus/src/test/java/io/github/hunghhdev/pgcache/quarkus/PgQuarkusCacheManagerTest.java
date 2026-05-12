@@ -108,11 +108,10 @@ class PgQuarkusCacheManagerTest {
     @Test
     void cacheConfig_appliesPerCacheSettings() {
         Map<String, PgQuarkusCacheManager.CacheConfig> configs = new HashMap<>();
-        PgQuarkusCacheManager.CacheConfig config = new PgQuarkusCacheManager.CacheConfig(
-            Duration.ofMinutes(30),
-            TTLPolicy.SLIDING,
-            false
-        );
+        PgQuarkusCacheManager.CacheConfig config = new PgQuarkusCacheManager.CacheConfig();
+        config.setTtl(Duration.ofMinutes(30));
+        config.setTtlPolicy(TTLPolicy.SLIDING);
+        config.setAllowNullValues(Boolean.FALSE);
         configs.put("customCache", config);
 
         PgQuarkusCacheManager customManager = new PgQuarkusCacheManager(
@@ -165,14 +164,22 @@ class PgQuarkusCacheManagerTest {
     }
 
     @Test
-    void cacheConfig_keepsIsAllowNullValuesCompatibility() {
+    void cacheConfig_allowNullValues_supportsThreeStates() {
         PgQuarkusCacheManager.CacheConfig config = new PgQuarkusCacheManager.CacheConfig();
 
-        assertFalse(config.isAllowNullValues());
+        // Default state: null = inherit from parent
+        assertNull(config.getAllowNullValues());
 
-        config.setAllowNullValues(true);
-
+        // Explicit true
+        config.setAllowNullValues(Boolean.TRUE);
         assertEquals(Boolean.TRUE, config.getAllowNullValues());
-        assertTrue(config.isAllowNullValues());
+
+        // Explicit false
+        config.setAllowNullValues(Boolean.FALSE);
+        assertEquals(Boolean.FALSE, config.getAllowNullValues());
+
+        // Reset to inherit
+        config.setAllowNullValues(null);
+        assertNull(config.getAllowNullValues());
     }
 }

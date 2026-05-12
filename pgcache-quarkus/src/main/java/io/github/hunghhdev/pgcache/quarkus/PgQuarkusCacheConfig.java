@@ -94,13 +94,9 @@ public interface PgQuarkusCacheConfig {
     }
 
     /**
-     * Parse TTL policy from string.
+     * Parse TTL policy from string. Defaults to {@link TTLPolicy#ABSOLUTE} on null/invalid input.
      */
     default TTLPolicy parseTtlPolicy() {
-        try {
-            return TTLPolicy.valueOf(ttlPolicy().toUpperCase());
-        } catch (IllegalArgumentException e) {
-            return TTLPolicy.ABSOLUTE;
-        }
+        return TTLPolicy.parseOrDefault(ttlPolicy());
     }
 }

@@ -279,15 +279,29 @@ public class PgCache implements Cache {
     }
     
     /**
-     * Manually trigger cleanup of expired entries.
+     * Manually trigger cleanup of expired entries in the underlying store.
+     *
+     * <p><strong>Scope:</strong> this affects ALL entries in the shared underlying store, not just
+     * entries belonging to this cache instance.</p>
+     *
+     * @since 1.7.0
      */
-    public void cleanupExpired() {
+    public void cleanupExpiredAllCaches() {
         try {
             cacheStore.cleanupExpired();
-            logger.debug("Cleaned up expired entries in cache '{}'", name);
+            logger.debug("Cleaned up expired entries (store-wide) triggered from cache '{}'", name);
         } catch (Exception e) {
-            logger.warn("Failed to cleanup expired entries in cache '{}': {}", name, e.getMessage());
+            logger.warn("Failed to cleanup expired entries (store-wide) from cache '{}': {}", name, e.getMessage());
         }
+    }
+
+    /**
+     * @deprecated since 1.7.0, use {@link #cleanupExpiredAllCaches()} -- name now matches actual scope.
+     *     Removed in 2.0.0.
+     */
+    @Deprecated
+    public void cleanupExpired() {
+        cleanupExpiredAllCaches();
     }
     
     /**

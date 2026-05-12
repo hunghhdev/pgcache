@@ -102,7 +102,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
      *
      * @param dataSource PostgreSQL DataSource
      * @param autoCreateTable whether to automatically create the cache table if it doesn't exist
+     * @deprecated since 1.7.0, use {@link #builder()} -- the canonical configuration entry point.
+     *     This constructor exposes only a subset of options (no custom table name, no event listeners,
+     *     no background cleanup). Removed in 2.0.0.
      */
+    @Deprecated
     public PgCacheStore(DataSource dataSource, boolean autoCreateTable) {
         this.dataSource = dataSource;
         this.objectMapper = new ObjectMapper();
@@ -123,7 +127,9 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
      * Creates a PgCacheStore with auto table creation enabled.
      *
      * @param dataSource PostgreSQL DataSource
+     * @deprecated since 1.7.0, use {@link #builder()}. Removed in 2.0.0.
      */
+    @Deprecated
     public PgCacheStore(DataSource dataSource) {
         this(dataSource, true);
     }
@@ -626,15 +632,13 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 Integer ttlSeconds = rs.getObject("ttl_seconds", Integer.class);
                 String ttlPolicyStr = rs.getString("ttl_policy");
 
-                // Parse TTL policy (default to ABSOLUTE for backward compatibility)
-                TTLPolicy ttlPolicy = TTLPolicy.ABSOLUTE;
-                if (ttlPolicyStr != null) {
-                    try {
-                        ttlPolicy = TTLPolicy.valueOf(ttlPolicyStr);
-                    } catch (IllegalArgumentException e) {
-                        logger.warn("Invalid TTL policy '{}' for key '{}', defaulting to ABSOLUTE", ttlPolicyStr, key);
+                final String keyForLog = key;
+                TTLPolicy ttlPolicy = TTLPolicy.parse(ttlPolicyStr).orElseGet(() -> {
+                    if (ttlPolicyStr != null) {
+                        logger.warn("Invalid TTL policy '{}' for key '{}', defaulting to ABSOLUTE", ttlPolicyStr, keyForLog);
                     }
-                }
+                    return TTLPolicy.ABSOLUTE;
+                });
 
                 // Update last_accessed timestamp for sliding TTL if refreshTTL is true
                 if (refreshTTL && ttlPolicy == TTLPolicy.SLIDING && ttlSeconds != null) {
@@ -708,15 +712,13 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 java.sql.Timestamp lastAccessedTimestamp = rs.getTimestamp("last_accessed");
                 Instant lastAccessed = lastAccessedTimestamp != null ? lastAccessedTimestamp.toInstant() : updatedAt;
 
-                // Parse TTL policy
-                TTLPolicy ttlPolicy = TTLPolicy.ABSOLUTE;
-                if (ttlPolicyStr != null) {
-                    try {
-                        ttlPolicy = TTLPolicy.valueOf(ttlPolicyStr);
-                    } catch (IllegalArgumentException e) {
-                        logger.warn("Invalid TTL policy '{}' for key '{}', defaulting to ABSOLUTE", ttlPolicyStr, key);
+                final String keyForLog2 = key;
+                TTLPolicy ttlPolicy = TTLPolicy.parse(ttlPolicyStr).orElseGet(() -> {
+                    if (ttlPolicyStr != null) {
+                        logger.warn("Invalid TTL policy '{}' for key '{}', defaulting to ABSOLUTE", ttlPolicyStr, keyForLog2);
                     }
-                }
+                    return TTLPolicy.ABSOLUTE;
+                });
 
                 // Calculate remaining TTL based on policy
                 Instant expirationTime;
@@ -752,16 +754,13 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 }
 
                 String ttlPolicyStr = rs.getString("ttl_policy");
-                if (ttlPolicyStr == null) {
-                    return Optional.of(TTLPolicy.ABSOLUTE); // Default for backward compatibility
-                }
-
-                try {
-                    return Optional.of(TTLPolicy.valueOf(ttlPolicyStr));
-                } catch (IllegalArgumentException e) {
-                    logger.warn("Invalid TTL policy '{}' for key '{}', returning ABSOLUTE", ttlPolicyStr, key);
-                    return Optional.of(TTLPolicy.ABSOLUTE);
-                }
+                final String keyForLog3 = key;
+                return Optional.of(TTLPolicy.parse(ttlPolicyStr).orElseGet(() -> {
+                    if (ttlPolicyStr != null) {
+                        logger.warn("Invalid TTL policy '{}' for key '{}', returning ABSOLUTE", ttlPolicyStr, keyForLog3);
+                    }
+                    return TTLPolicy.ABSOLUTE;
+                }));
             }
         } catch (SQLException e) {
             throw new PgCacheException("Failed to get TTL policy from cache", e);

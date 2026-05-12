@@ -63,11 +63,11 @@ public class PgQuarkusCacheProducer {
             PgQuarkusCacheManager.CacheConfig cc = new PgQuarkusCacheManager.CacheConfig();
             cacheConfig.ttl().ifPresent(cc::setTtl);
             cacheConfig.ttlPolicy().ifPresent(policy -> {
-                try {
-                    cc.setTtlPolicy(TTLPolicy.valueOf(policy.toUpperCase()));
-                } catch (IllegalArgumentException e) {
+                TTLPolicy parsed = TTLPolicy.parse(policy).orElseGet(() -> {
                     logger.warn("Invalid TTL policy '{}' for cache '{}', using default", policy, name);
-                }
+                    return TTLPolicy.ABSOLUTE;
+                });
+                cc.setTtlPolicy(parsed);
             });
             cacheConfig.allowNullValues().ifPresent(cc::setAllowNullValues);
             cacheConfigs.put(name, cc);

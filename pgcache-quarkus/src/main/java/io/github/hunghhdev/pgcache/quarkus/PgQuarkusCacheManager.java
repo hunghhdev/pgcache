@@ -79,8 +79,13 @@ public class PgQuarkusCacheManager implements CacheManager {
     }
 
     /**
-     * Get cache with fallback creation.
+     * Get-or-create a cache, returning the concrete {@link PgQuarkusCache} type.
+     *
+     * @deprecated since 1.7.0, use {@code (PgQuarkusCache) getCache(name).get()} --
+     *     {@link #getCache(String)} always returns a present Optional.
+     *     Removed in 2.0.0.
      */
+    @Deprecated
     public PgQuarkusCache getOrCreateCache(String name) {
         return caches.computeIfAbsent(name, this::createCache);
     }
@@ -93,7 +98,8 @@ public class PgQuarkusCacheManager implements CacheManager {
     }
 
     /**
-     * Configuration for individual caches.
+     * Configuration for individual caches. Field {@code allowNullValues} uses {@code Boolean}
+     * (not {@code boolean}) for 3-state semantics: {@code null} means "use parent default".
      */
     public static class CacheConfig {
         private Duration ttl;
@@ -101,12 +107,6 @@ public class PgQuarkusCacheManager implements CacheManager {
         private Boolean allowNullValues;
 
         public CacheConfig() {}
-
-        public CacheConfig(Duration ttl, TTLPolicy ttlPolicy, boolean allowNullValues) {
-            this.ttl = ttl;
-            this.ttlPolicy = ttlPolicy;
-            this.allowNullValues = allowNullValues;
-        }
 
         public Duration getTtl() {
             return ttl;
@@ -124,15 +124,18 @@ public class PgQuarkusCacheManager implements CacheManager {
             this.ttlPolicy = ttlPolicy;
         }
 
+        /**
+         * @return {@code Boolean} value: {@code null} = use parent default, otherwise the explicit setting
+         */
         public Boolean getAllowNullValues() {
             return allowNullValues;
         }
 
-        public boolean isAllowNullValues() {
-            return Boolean.TRUE.equals(allowNullValues);
-        }
-
-        public void setAllowNullValues(boolean allowNullValues) {
+        /**
+         * @param allowNullValues null to inherit parent default; true/false for explicit setting
+         * @since 1.7.0 setter changed from {@code boolean} to {@code Boolean} to support inherit-default semantics
+         */
+        public void setAllowNullValues(Boolean allowNullValues) {
             this.allowNullValues = allowNullValues;
         }
     }

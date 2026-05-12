@@ -211,7 +211,7 @@ public class PgCacheManager implements CacheManager, DisposableBean {
         for (Cache cache : cacheMap.values()) {
             if (cache instanceof PgCache) {
                 try {
-                    ((PgCache) cache).cleanupExpired();
+                    ((PgCache) cache).cleanupExpiredAllCaches();
                 } catch (Exception e) {
                     logger.warn("Failed to cleanup expired entries in cache '{}': {}", 
                                cache.getName(), e.getMessage());

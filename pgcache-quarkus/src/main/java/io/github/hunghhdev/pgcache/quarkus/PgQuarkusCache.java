@@ -127,6 +127,14 @@ public class PgQuarkusCache implements Cache {
         .runSubscriptionOn(Infrastructure.getDefaultWorkerPool());
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * @apiNote This implementation scans ALL keys in this cache and applies the predicate
+     *     in-process, then batch-evicts matching keys. Memory and time scale O(N) with the number
+     *     of cached entries. For caches near the design ceiling (~1M entries) this can be
+     *     expensive. Prefer {@link #invalidate(Object)} or {@link #invalidateAll()} where possible.
+     */
     @Override
     public Uni<Void> invalidateIf(Predicate<Object> predicate) {
         // Complex invalidation, run on worker pool
@@ -163,8 +171,23 @@ public class PgQuarkusCache implements Cache {
         return cacheStore.size(scopedLikePrefix() + "%");
     }
 
-    public void cleanupExpired() {
+    /**
+     * Trigger cleanup of expired entries in the underlying store.
+     *
+     * <p><strong>Scope:</strong> store-wide, NOT scoped to this cache instance.</p>
+     *
+     * @since 1.7.0
+     */
+    public void cleanupExpiredAllCaches() {
         cacheStore.cleanupExpired();
+    }
+
+    /**
+     * @deprecated since 1.7.0, use {@link #cleanupExpiredAllCaches()}. Removed in 2.0.0.
+     */
+    @Deprecated
+    public void cleanupExpired() {
+        cleanupExpiredAllCaches();
     }
 
     private Uni<Void> storeValue(String key, Object value) {
