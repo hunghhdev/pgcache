@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-05-12
+
+### Bug Fixes
+
+- **Critical:** Cache names containing `_` or `%` no longer cause cross-cache eviction. SQL LIKE wildcards are now escaped via `LIKE ? ESCAPE '\\'`.
+- **Critical:** Concurrent `setCacheConfiguration` / `removeCache` / `getCache` no longer racy. `PgCacheManager` admin operations are now synchronized on a dedicated lock.
+- `PgCacheManager.removeCache` correctly returns `true` even when post-removal `clear()` fails. Order also corrected so `clear()` runs before store decref.
+
+### New Features
+
+- `PgCacheClient.size(String pattern)` — efficient COUNT-based size lookup with default fallback for external implementers.
+- `TTLPolicy.parse(String)` and `TTLPolicy.parseOrDefault(String)` — shared cross-module parsing helpers.
+- `NullValueMarker.MARKER_VALUE` constant and `NullValueMarker.isMarker(Object)` predicate.
+- `SqlPatterns.escapeLikePattern(String)` — utility for escaping SQL LIKE meta-characters.
+- `PgCacheManager.getStoreStatistics()` — per-store statistics for health endpoints.
+- `PgCacheHealthIndicator` now reports stats per underlying store (no longer assumes "first cache" represents all).
+
+### Deprecations (removal in 2.0.0)
+
+- `PgCacheStore(DataSource, boolean)` and `PgCacheStore(DataSource)` constructors — use `PgCacheStore.builder()`.
+- `PgCacheManager.PgCacheConfiguration` (nested) — use `CacheStoreConfig`.
+- `PgCache.cleanupExpired()` — use `cleanupExpiredAllCaches()` (clearer scope: store-wide, not cache-scoped).
+- `PgQuarkusCache.cleanupExpired()` — use `cleanupExpiredAllCaches()`.
+- `PgQuarkusCacheManager.getOrCreateCache(String)` — use `getCache(name).get()`.
+- `PgQuarkusCacheManager.CacheConfig.isAllowNullValues()` removed; 3-arg constructor removed; setter changed to `setAllowNullValues(Boolean)` to support 3-state (null = inherit) semantics.
+
+### Internal restructuring (no behavior change)
+
+- `PgCacheStore` split: `SchemaManager` and `BackgroundCleanupScheduler` extracted as collaborators.
+- DRY refactor: shared `validateKey` and `normalizeValue` helpers; magic numbers promoted to named constants; field declarations consolidated.
+- `catch (Exception)` narrowed to `catch (SQLException | JsonProcessingException)` where appropriate.
+- `PgCache` exception strategy unified: read methods swallow + log warn + return default; write methods rethrow `PgCacheException` (no longer raw `RuntimeException`).
+- `TtlHelper` (dead code) removed.
+
+### Migration
+
+No database schema changes required. All deprecations remain functional through 1.7.x; remove usage before upgrading to 2.0.0.
+
+---
+
 ## [1.5.1] - 2025-12-19
 
 ### Fixed
