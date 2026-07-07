@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### New Features
+
+- **Spring Boot 3 support**: auto-configurations are now registered via `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports` (Boot 3.x) in addition to `spring.factories` (Boot 2.x). Verified in CI against Boot 3.2 on JDK 17.
+- **Quarkus module works out of the box**: the jar now ships a Jandex index, so `@Inject PgQuarkusCacheManager` is discovered without `quarkus.index-dependency` configuration. `PgQuarkusHealthCheck` is injectable (CDI producer). New config: `pgcache.table-name`, `pgcache.auto-create-table`.
+- Quarkus async operations run on the injected managed `ExecutorService` (fallback: Mutiny worker pool) instead of `ForkJoinPool.commonPool()`.
+- `PgCacheStore.getTableName()` accessor.
+- Spring: `PgCache.getCacheStatistics()` — statistics scoped to a single cache (the store-wide `getStatistics()` remains).
+- CI workflow: build + test matrix on JDK 11/17/21 and a Spring Boot 3 compatibility job.
+
+### Bug Fixes
+
+- `putIfAbsent` is now a single atomic statement on a single connection (was: three statements, with the existing-value lookup on a second pooled connection — deadlock-prone on exhausted pools and racy under concurrency). Statistics are no longer polluted and the permanent variant fires `onPut` like the TTL variant.
+- Timestamp columns are now `TIMESTAMPTZ`; tables created by older versions are migrated automatically at startup. Fixes TTL math across writer time zones and DST transitions.
+- `putAll` executes in an explicit transaction — a mid-batch failure leaves no partial writes (Redis `MSET` semantics).
+- `close()` deregisters the JVM shutdown hook (was leaked, pinning the store and DataSource on redeploys).
+- Connection retry only applies to transient failures (SQLState `08xxx`); auth/config errors fail fast. Backoff is now truly exponential.
+- Micrometer meters report per-cache counts instead of shared store-wide counters (dashboards no longer multiply by the number of caches). Meter binding is idempotent across composite registries and cache re-creation.
+- Fixed a race in the cached `size()` value that could pin a stale count after a concurrent write.
+- Removed extension-only `@ConfigRoot` from the Quarkus config mapping.
+
+### Migration
+
+Schema migration to `TIMESTAMPTZ` happens automatically on startup when `autoCreateTable=true` (a WARN is logged). To migrate manually:
+```sql
+ALTER TABLE pgcache_store
+  ALTER COLUMN updated_at TYPE timestamptz USING updated_at AT TIME ZONE current_setting('TimeZone'),
+  ALTER COLUMN updated_at SET DEFAULT now(),
+  ALTER COLUMN last_accessed TYPE timestamptz USING last_accessed AT TIME ZONE current_setting('TimeZone'),
+  ALTER COLUMN last_accessed SET DEFAULT now();
+```
+
 ## [1.7.1] - 2026-07-07
 
 ### Bug Fixes

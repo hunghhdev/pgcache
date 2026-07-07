@@ -280,6 +280,18 @@ PgCache uses **UNLOGGED tables** (no WAL overhead) and **JSONB** storage for per
 - **Write**: ~2-10ms
 - **Throughput**: Hundreds to low thousands ops/sec
 
+### UNLOGGED table semantics
+
+UNLOGGED tables are what make PgCache fast, and they behave like a cache should — but be aware:
+
+- **Crash recovery truncates the table.** After a PostgreSQL crash (not a clean restart), all cache entries are gone. Your application must treat every read as a potential miss — which is true of any cache.
+- **Streaming replicas see an empty table.** UNLOGGED data is not replicated; if you route reads to a hot standby, every cache read there will miss. Point PgCache at the primary.
+
+### Error-handling strategy
+
+- **Reads degrade**: if the database is unreachable, `get` behaves as a cache miss (logged as a warning) so your loader path still runs.
+- **Writes throw**: `put`/`evict` failures raise `PgCacheException` — silent write failures would let stale data live forever.
+
 ## Migration
 
 ### From 1.6.x to 1.7.0
