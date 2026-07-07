@@ -362,7 +362,8 @@ public class PgCache implements Cache {
             String keyStr = toKeyString(key);
             cacheStore.put(keyStr, value, ttl, ttlPolicy);
         } catch (Exception e) {
-            logger.warn("Failed to put value into cache '{}' for key '{}': {}", name, key, e.getMessage());
+            logger.error("Failed to put value in cache '{}' for key '{}': {}", name, key, e.getMessage());
+            throw new PgCacheException("Cache put operation failed for cache '" + name + "'", e);
         }
     }
     

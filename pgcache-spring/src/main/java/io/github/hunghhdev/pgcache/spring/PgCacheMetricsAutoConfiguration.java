@@ -4,7 +4,6 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.binder.MeterBinder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -21,7 +20,12 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 @ConditionalOnClass({MeterRegistry.class, PgCacheMetrics.class})
 @ConditionalOnBean(PgCacheManager.class)
-@AutoConfigureAfter({PgCacheAutoConfiguration.class, CompositeMeterRegistryAutoConfiguration.class})
+// CompositeMeterRegistryAutoConfiguration referenced by name: actuator-autoconfigure
+// is optional, and a class literal risks NoClassDefFoundError during annotation
+// parsing when it is absent from the classpath
+@AutoConfigureAfter(
+        value = PgCacheAutoConfiguration.class,
+        name = "org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration")
 public class PgCacheMetricsAutoConfiguration {
 
     private static final Logger logger = LoggerFactory.getLogger(PgCacheMetricsAutoConfiguration.class);

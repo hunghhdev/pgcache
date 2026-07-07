@@ -26,6 +26,19 @@ class PgCacheTest {
     private PgCacheStore cacheStore;
 
     @Test
+    void putWithTtl_rethrowsBackendFailure() {
+        // Write strategy (since 1.7.0): write methods rethrow PgCacheException —
+        // the TTL overload must behave like the Spring-contract put()
+        PgCache cache = new PgCache("test", cacheStore, Duration.ofMinutes(5), true, TTLPolicy.ABSOLUTE);
+
+        org.mockito.Mockito.doThrow(new io.github.hunghhdev.pgcache.core.PgCacheException("store down"))
+                .when(cacheStore).put(eq("test:key1"), eq("v"), eq(Duration.ofSeconds(10)), eq(TTLPolicy.SLIDING));
+
+        assertThrows(io.github.hunghhdev.pgcache.core.PgCacheException.class,
+                () -> cache.put("key1", "v", Duration.ofSeconds(10), TTLPolicy.SLIDING));
+    }
+
+    @Test
     void getWithNullType_doesNotThrowAndReturnsNull() {
         PgCache cache = new PgCache("test", cacheStore, Duration.ofMinutes(5), true, TTLPolicy.ABSOLUTE);
 
