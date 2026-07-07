@@ -3,16 +3,20 @@ package io.github.hunghhdev.pgcache.quarkus;
 import io.github.hunghhdev.pgcache.core.PgCacheStore;
 import io.github.hunghhdev.pgcache.core.TTLPolicy;
 import io.quarkus.arc.DefaultBean;
+import io.smallrye.mutiny.infrastructure.Infrastructure;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Disposes;
+import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Inject;
 import javax.sql.DataSource;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 
 /**
  * CDI producer for PgCache components in Quarkus.
@@ -30,6 +34,13 @@ public class PgQuarkusCacheProducer {
     @Inject
     PgQuarkusCacheConfig config;
 
+    /**
+     * Quarkus' managed worker ExecutorService. Optional: absent in plain unit
+     * tests or exotic setups — then we fall back to Mutiny's default worker pool.
+     */
+    @Inject
+    Instance<ExecutorService> managedExecutorService;
+
     @Produces
     @ApplicationScoped
     @DefaultBean
@@ -45,7 +56,13 @@ public class PgQuarkusCacheProducer {
 
         PgCacheStore.Builder builder = PgCacheStore.builder()
             .dataSource(dataSource)
-            .allowNullValues(anyCacheAllowsNulls);
+            .allowNullValues(anyCacheAllowsNulls)
+            .autoCreateTable(config.autoCreateTable())
+            // Blocking JDBC must never run on ForkJoinPool.commonPool(): on small
+            // containers its parallelism is tiny and it is shared with app code
+            .asyncExecutor(resolveAsyncExecutor());
+
+        config.tableName().ifPresent(builder::tableName);
 
         // Configure background cleanup
         if (config.backgroundCleanup().enabled()) {
@@ -54,6 +71,13 @@ public class PgQuarkusCacheProducer {
         }
 
         return builder.build();
+    }
+
+    private Executor resolveAsyncExecutor() {
+        if (managedExecutorService != null && managedExecutorService.isResolvable()) {
+            return managedExecutorService.get();
+        }
+        return Infrastructure.getDefaultWorkerPool();
     }
 
     @Produces
@@ -85,6 +109,19 @@ public class PgQuarkusCacheProducer {
             config.parseTtlPolicy(),
             cacheConfigs
         );
+    }
+
+    /**
+     * Health check data provider — injectable as documented in
+     * {@link PgQuarkusHealthCheck}'s javadoc example.
+     *
+     * @since 1.8.0
+     */
+    @Produces
+    @ApplicationScoped
+    @DefaultBean
+    public PgQuarkusHealthCheck pgQuarkusHealthCheck(PgQuarkusCacheManager cacheManager) {
+        return new PgQuarkusHealthCheck(cacheManager);
     }
 
     void dispose(@Disposes PgCacheStore cacheStore) {

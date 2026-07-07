@@ -86,6 +86,16 @@ class PgQuarkusCacheNullValuesTest {
         }
 
         @Override
+        public Optional<String> tableName() {
+            return Optional.empty();
+        }
+
+        @Override
+        public boolean autoCreateTable() {
+            return true;
+        }
+
+        @Override
         public BackgroundCleanupConfig backgroundCleanup() {
             return new BackgroundCleanupConfig() {
                 @Override

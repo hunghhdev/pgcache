@@ -143,6 +143,16 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         return schemaManager.tableExists();
     }
 
+    /**
+     * Returns the name of the table backing this store.
+     *
+     * @return the (possibly schema-qualified) table name
+     * @since 1.8.0
+     */
+    public String getTableName() {
+        return tableName;
+    }
+
     @Override
     public <T> Optional<T> get(String key, Class<T> clazz) {
         return get(key, clazz, true); // Default to refreshing TTL for sliding TTL entries

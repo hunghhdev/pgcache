@@ -49,6 +49,22 @@ public interface PgQuarkusCacheConfig {
     String ttlPolicy();
 
     /**
+     * Name of the (optionally schema-qualified) table backing the cache.
+     * Defaults to the core default ({@code pgcache_store}).
+     *
+     * @since 1.8.0
+     */
+    Optional<String> tableName();
+
+    /**
+     * Whether to automatically create the cache table if it doesn't exist.
+     *
+     * @since 1.8.0
+     */
+    @WithDefault("true")
+    boolean autoCreateTable();
+
+    /**
      * Background cleanup configuration.
      */
     BackgroundCleanupConfig backgroundCleanup();
