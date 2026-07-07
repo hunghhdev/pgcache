@@ -54,6 +54,12 @@ final class SchemaManager {
         try (Connection conn = dataSource.getConnection();
              Statement stmt = conn.createStatement()) {
 
+            // DDL is transactional in PostgreSQL: on an auto-commit=false pool
+            // the created table would be rolled back on connection return
+            if (!conn.getAutoCommit()) {
+                conn.setAutoCommit(true);
+            }
+
             boolean tableAlreadyExists;
             try (ResultSet rs = conn.getMetaData().getTables(
                     null, schemaName(), identifierName(), new String[]{"TABLE"})) {

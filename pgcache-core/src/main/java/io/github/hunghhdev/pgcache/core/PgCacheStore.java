@@ -603,8 +603,16 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         
         for (int attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
             try {
-                return dataSource.getConnection();
-                
+                Connection conn = dataSource.getConnection();
+                // Pools configured with auto-commit=false would roll back our
+                // statements on connection return, silently losing writes.
+                // Every operation here is a single self-contained statement,
+                // so autocommit is always the correct mode.
+                if (!conn.getAutoCommit()) {
+                    conn.setAutoCommit(true);
+                }
+                return conn;
+
             } catch (SQLException e) {
                 lastException = e;
                 logger.warn("Connection attempt {} failed: {}", attempt, e.getMessage());
