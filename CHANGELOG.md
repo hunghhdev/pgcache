@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Bug Fixes
+
+- **Critical:** Auto table creation no longer fails for schema-qualified table names (`app.cache`): index names are now plain identifiers as PostgreSQL requires.
+- **Critical:** Spring auto-configuration backs off correctly — it no longer crashes apps without a `DataSource` bean (`@ConditionalOnBean` added) and no longer collides with a user-defined `CacheManager` (back-off is now by type, not by bean name). The dead `cacheManager()` alias bean was removed.
+- **Critical:** Writes are no longer silently lost on connection pools configured with `auto-commit=false` — connections are switched to autocommit before use (including DDL).
+- `PgCacheHealthIndicator` is now actually registered via the new `PgCacheHealthAutoConfiguration` (it was previously dead code — `@Component` without a component scan).
+- `refreshTTL` no longer resurrects logically expired rows awaiting cleanup; it returns `false`, matching `get()` semantics.
+- Sliding-TTL reads refresh `last_accessed` atomically in the same statement/connection as the read: no second pool checkout (fixes silent refresh failures on exhausted pools) and no re-arming of already-expired rows.
+- Quarkus: per-cache `allow-null-values=true` now works when the global default is `false`.
+- Sub-minute `background-cleanup.interval` values (e.g. `PT30S`) no longer crash startup in Spring and Quarkus.
+- `tableExists` metadata lookup escapes SQL LIKE metacharacters and folds case, fixing false positives (`pgcacheXstore` matching `pgcache_store`) and misses for uppercase table names.
+- Spring: the TTL `put(key, value, ttl, policy)` overload now rethrows `PgCacheException` like the Spring-contract `put`, instead of swallowing failures.
+- Spring: metrics auto-configuration references actuator classes by name, avoiding `NoClassDefFoundError` when `micrometer-core` is present without actuator.
+
+### New Features
+
+- `PgCacheStore.Builder.cleanupInterval(Duration)` — background cleanup now supports sub-minute intervals; non-positive intervals are rejected with a clear error.
+
 ## [1.7.0] - 2026-05-12
 
 ### Bug Fixes
