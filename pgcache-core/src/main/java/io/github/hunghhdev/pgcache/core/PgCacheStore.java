@@ -55,12 +55,12 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
      * (e.g. {@code "t."}) for contexts where bare column names would be
      * ambiguous, such as ON CONFLICT DO UPDATE.
      */
-    private static String notExpiredClause(String p) {
-        return "(" + p + "ttl_seconds IS NULL" +
-            " OR ((" + p + "ttl_policy = 'ABSOLUTE' OR " + p + "ttl_policy IS NULL)" +
-            " AND (" + p + "updated_at + (" + p + "ttl_seconds * interval '1 second')) > now())" +
-            " OR (" + p + "ttl_policy = 'SLIDING'" +
-            " AND ((COALESCE(" + p + "last_accessed, " + p + "updated_at)) + (" + p + "ttl_seconds * interval '1 second')) > now()))";
+    private static String notExpiredClause(String col) {
+        return "(" + col + "ttl_seconds IS NULL" +
+            " OR ((" + col + "ttl_policy = 'ABSOLUTE' OR " + col + "ttl_policy IS NULL)" +
+            " AND (" + col + "updated_at + (" + col + "ttl_seconds * interval '1 second')) > now())" +
+            " OR (" + col + "ttl_policy = 'SLIDING'" +
+            " AND ((COALESCE(" + col + "last_accessed, " + col + "updated_at)) + (" + col + "ttl_seconds * interval '1 second')) > now()))";
     }
 
     private static final String SQL_IDENTIFIER_PATTERN = "^[a-zA-Z_][a-zA-Z0-9_]*$";
@@ -916,7 +916,9 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             stmt.setString(5, key);
 
             try (ResultSet rs = stmt.executeQuery()) {
-                rs.next();
+                if (!rs.next()) {
+                    throw new PgCacheException("putIfAbsent returned no result row for key: " + key);
+                }
                 boolean inserted = rs.getBoolean("inserted");
 
                 if (inserted) {
@@ -950,6 +952,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 }
 
                 Object existing = objectMapper.readValue(existingJson, Object.class);
+                // Cached nulls must surface exactly like get() surfaces them:
+                // as the NullValueMarker instance, not the raw marker map
+                if (allowNullValues && NullValueMarker.isMarker(existing)) {
+                    return Optional.of(NullValueMarker.getInstance());
+                }
                 return Optional.of(existing);
             }
         } catch (SQLException | JsonProcessingException e) {
@@ -1100,8 +1107,9 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         } finally {
             try {
                 conn.setAutoCommit(true);
-            } catch (SQLException ignored) {
+            } catch (SQLException restoreFailure) {
                 // connection is being returned to the pool; the pool resets state
+                logger.debug("Failed to restore autocommit before pool return: {}", restoreFailure.getMessage());
             }
         }
     }

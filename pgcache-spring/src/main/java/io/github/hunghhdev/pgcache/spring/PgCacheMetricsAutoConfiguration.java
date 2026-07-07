@@ -2,6 +2,10 @@ package io.github.hunghhdev.pgcache.spring;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.binder.MeterBinder;
+
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
@@ -34,10 +38,8 @@ public class PgCacheMetricsAutoConfiguration {
     public MeterBinder pgCacheMetricsBinder(PgCacheManager cacheManager) {
         // bindTo may be invoked once per registry of a composite — track seen
         // registries and register the cache-created listener exactly once
-        java.util.Set<io.micrometer.core.instrument.MeterRegistry> registries =
-                java.util.concurrent.ConcurrentHashMap.newKeySet();
-        java.util.concurrent.atomic.AtomicBoolean listenerRegistered =
-                new java.util.concurrent.atomic.AtomicBoolean();
+        Set<MeterRegistry> registries = ConcurrentHashMap.newKeySet();
+        AtomicBoolean listenerRegistered = new AtomicBoolean();
 
         return registry -> {
             if (!registries.add(registry)) {

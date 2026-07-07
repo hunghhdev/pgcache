@@ -82,6 +82,24 @@ class PgCacheStorePutIfAbsentAtomicTest {
     }
 
     @Test
+    void existingCachedNullMustComeBackAsNullValueMarker() {
+        try (PgCacheStore store = PgCacheStore.builder()
+                .dataSource(dataSource)
+                .tableName("pia_null_marker")
+                .allowNullValues(true)
+                .build()) {
+
+            store.put("null-key", null, Duration.ofMinutes(5));
+
+            Optional<Object> existing = store.putIfAbsent("null-key", "candidate", Duration.ofMinutes(5), TTLPolicy.ABSOLUTE);
+            assertTrue(existing.isPresent(), "cached null is a live entry — putIfAbsent must not insert");
+            assertTrue(existing.get() instanceof NullValueMarker,
+                    "cached null must surface as NullValueMarker (like get()), not the raw marker map; was: "
+                            + existing.get().getClass());
+        }
+    }
+
+    @Test
     void permanentVariantMustFireOnPutLikeTtlVariant() {
         List<String> putEvents = new ArrayList<>();
         CacheEventListener listener = new CacheEventListener() {

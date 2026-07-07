@@ -496,11 +496,16 @@ public class PgCache implements Cache {
     }
 
     /**
-     * Reset all cache statistics counters to zero.
+     * Reset all cache statistics counters to zero — both the shared store-wide
+     * counters and this cache's local counters.
      *
      * @since 1.3.0
      */
     public void resetStatistics() {
+        cacheHits.set(0);
+        cacheMisses.set(0);
+        cachePuts.set(0);
+        cacheEvictions.set(0);
         cacheStore.resetStatistics();
         logger.debug("Reset statistics for cache '{}'", name);
     }
