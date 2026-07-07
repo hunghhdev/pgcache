@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -97,6 +98,7 @@ final class SchemaManager {
                 logger.info("UNLOGGED table '{}' was created successfully", tableName);
             } else {
                 logger.debug("Table '{}' already exists, skipping creation", tableName);
+                migrateLegacyTimestampColumns(conn, stmt);
             }
         } catch (SQLException e) {
             logger.error("Failed to initialize cache table", e);
@@ -108,10 +110,10 @@ final class SchemaManager {
         return "CREATE UNLOGGED TABLE IF NOT EXISTS " + tableName + " (" +
                "  key TEXT PRIMARY KEY, " +
                "  value JSONB NOT NULL, " +
-               "  updated_at TIMESTAMP DEFAULT now(), " +
+               "  updated_at TIMESTAMPTZ DEFAULT now(), " +
                "  ttl_seconds INT, " +
                "  ttl_policy VARCHAR(10) DEFAULT 'ABSOLUTE', " +
-               "  last_accessed TIMESTAMP DEFAULT now()" +
+               "  last_accessed TIMESTAMPTZ DEFAULT now()" +
                ")";
     }
 
@@ -130,6 +132,42 @@ final class SchemaManager {
         return "CREATE INDEX IF NOT EXISTS " + identifierName() + "_sliding_ttl_idx " +
                "ON " + tableName + " (ttl_policy, last_accessed) " +
                "WHERE ttl_policy = 'SLIDING'";
+    }
+
+    /**
+     * Tables created before 1.8.0 used TIMESTAMP (without time zone), which
+     * breaks TTL math across writer time zones and at DST transitions.
+     * Migrate them to TIMESTAMPTZ, interpreting existing wall-clock values in
+     * the current session time zone (the same zone `now()` used when writing).
+     */
+    private void migrateLegacyTimestampColumns(Connection conn, Statement stmt) throws SQLException {
+        StringBuilder alter = new StringBuilder();
+        try (PreparedStatement check = conn.prepareStatement(
+                "SELECT column_name FROM information_schema.columns " +
+                "WHERE table_schema = COALESCE(?, current_schema()) AND table_name = ? " +
+                "AND column_name IN ('updated_at', 'last_accessed') " +
+                "AND data_type = 'timestamp without time zone'")) {
+            check.setString(1, schemaName() == null ? null : schemaName().toLowerCase(java.util.Locale.ROOT));
+            check.setString(2, identifierName().toLowerCase(java.util.Locale.ROOT));
+            try (ResultSet rs = check.executeQuery()) {
+                while (rs.next()) {
+                    String column = rs.getString(1);
+                    if (alter.length() > 0) {
+                        alter.append(", ");
+                    }
+                    alter.append("ALTER COLUMN ").append(column)
+                         .append(" TYPE timestamptz USING ").append(column)
+                         .append(" AT TIME ZONE current_setting('TimeZone'), ")
+                         .append("ALTER COLUMN ").append(column).append(" SET DEFAULT now()");
+                }
+            }
+        }
+
+        if (alter.length() > 0) {
+            logger.warn("Migrating legacy TIMESTAMP columns of '{}' to TIMESTAMPTZ " +
+                    "(existing values interpreted in session time zone)", tableName);
+            stmt.execute("ALTER TABLE " + tableName + " " + alter);
+        }
     }
 
     private String schemaName() {
