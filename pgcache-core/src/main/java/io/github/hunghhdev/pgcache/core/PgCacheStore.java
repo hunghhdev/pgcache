@@ -1037,12 +1037,40 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 stmt.addBatch();
             }
 
-            int[] results = stmt.executeBatch();
+            int[] results = executeBatchAtomically(conn, stmt);
             putCount.addAndGet(results.length);
             invalidateSizeCache();
 
         } catch (SQLException | JsonProcessingException e) {
             throw new PgCacheException("Failed to put multiple values in cache", e);
+        }
+    }
+
+    /**
+     * Executes a batch inside an explicit transaction so a mid-batch failure
+     * leaves no partial prefix written (MSET semantics). pgJDBC happens to
+     * pipeline small batches atomically, but large batches are flushed in
+     * chunks — without a transaction each flushed chunk would commit.
+     */
+    private int[] executeBatchAtomically(Connection conn, PreparedStatement stmt) throws SQLException {
+        conn.setAutoCommit(false);
+        try {
+            int[] results = stmt.executeBatch();
+            conn.commit();
+            return results;
+        } catch (SQLException e) {
+            try {
+                conn.rollback();
+            } catch (SQLException rollbackFailure) {
+                e.addSuppressed(rollbackFailure);
+            }
+            throw e;
+        } finally {
+            try {
+                conn.setAutoCommit(true);
+            } catch (SQLException ignored) {
+                // connection is being returned to the pool; the pool resets state
+            }
         }
     }
 
@@ -1078,7 +1106,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 stmt.addBatch();
             }
 
-            int[] results = stmt.executeBatch();
+            int[] results = executeBatchAtomically(conn, stmt);
             putCount.addAndGet(results.length);
             invalidateSizeCache();
 
