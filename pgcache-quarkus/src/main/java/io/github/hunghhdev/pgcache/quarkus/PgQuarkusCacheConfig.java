@@ -1,8 +1,6 @@
 package io.github.hunghhdev.pgcache.quarkus;
 
 import io.github.hunghhdev.pgcache.core.TTLPolicy;
-import io.quarkus.runtime.annotations.ConfigPhase;
-import io.quarkus.runtime.annotations.ConfigRoot;
 import io.smallrye.config.ConfigMapping;
 import io.smallrye.config.WithDefault;
 import io.smallrye.config.WithName;
@@ -28,7 +26,6 @@ import java.util.Optional;
  * @since 1.5.0
  */
 @ConfigMapping(prefix = "pgcache")
-@ConfigRoot(phase = ConfigPhase.RUN_TIME)
 public interface PgQuarkusCacheConfig {
 
     /**
