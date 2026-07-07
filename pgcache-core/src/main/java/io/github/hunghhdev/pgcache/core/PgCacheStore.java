@@ -47,10 +47,20 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
      * SQL WHERE clause for checking non-expired entries.
      * Handles: permanent entries (NULL ttl), ABSOLUTE TTL, and SLIDING TTL.
      */
-    private static final String NOT_EXPIRED_WHERE_CLAUSE =
-        "(ttl_seconds IS NULL" +
-        " OR ((ttl_policy = 'ABSOLUTE' OR ttl_policy IS NULL) AND (updated_at + (ttl_seconds * interval '1 second')) > now())" +
-        " OR (ttl_policy = 'SLIDING' AND ((COALESCE(last_accessed, updated_at)) + (ttl_seconds * interval '1 second')) > now()))";
+    private static final String NOT_EXPIRED_WHERE_CLAUSE = notExpiredClause("");
+
+    /**
+     * Builds the non-expired predicate with an optional column prefix
+     * (e.g. {@code "t."}) for contexts where bare column names would be
+     * ambiguous, such as ON CONFLICT DO UPDATE.
+     */
+    private static String notExpiredClause(String p) {
+        return "(" + p + "ttl_seconds IS NULL" +
+            " OR ((" + p + "ttl_policy = 'ABSOLUTE' OR " + p + "ttl_policy IS NULL)" +
+            " AND (" + p + "updated_at + (" + p + "ttl_seconds * interval '1 second')) > now())" +
+            " OR (" + p + "ttl_policy = 'SLIDING'" +
+            " AND ((COALESCE(" + p + "last_accessed, " + p + "updated_at)) + (" + p + "ttl_seconds * interval '1 second')) > now()))";
+    }
 
     private static final String SQL_IDENTIFIER_PATTERN = "^[a-zA-Z_][a-zA-Z0-9_]*$";
 
@@ -823,50 +833,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
         int ttlSeconds = normalizeTtlSeconds(ttl);
 
-        try (Connection conn = getValidatedConnection()) {
-            // First, delete expired entry for this key if it exists
-            // This prevents blocking by expired rows
-            String deleteExpiredSql = "DELETE FROM " + tableName +
-                     " WHERE key = ? AND (" + EXPIRED_WHERE_CLAUSE + ")";
-            try (PreparedStatement deleteStmt = conn.prepareStatement(deleteExpiredSql)) {
-                deleteStmt.setString(1, key);
-                int deletedExpired = deleteStmt.executeUpdate();
-                if (deletedExpired > 0) {
-                    invalidateSizeCache();
-                }
-            }
-
-            // Atomic insert - only inserts if key doesn't exist
-            // Uses ON CONFLICT DO NOTHING to avoid race conditions
-            String insertSql = "INSERT INTO " + tableName +
-                     " (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
-                     "VALUES (?, ?::jsonb, now(), ?, ?, now()) " +
-                     "ON CONFLICT (key) DO NOTHING";
-
-            try (PreparedStatement stmt = conn.prepareStatement(insertSql)) {
-                String jsonValue = objectMapper.writeValueAsString(valueToStore);
-
-                stmt.setString(1, key);
-                stmt.setString(2, jsonValue);
-                stmt.setInt(3, ttlSeconds);
-                stmt.setString(4, policy.name());
-
-                int inserted = stmt.executeUpdate();
-
-                if (inserted > 0) {
-                    // Successfully inserted - key was not present
-                    putCount.incrementAndGet();
-                    invalidateSizeCache();
-                    fireOnPut(key, value);
-                    return Optional.empty();
-                } else {
-                    // Key already exists and is not expired - return the existing value
-                    return get(key, Object.class, false);
-                }
-            }
-        } catch (SQLException | JsonProcessingException e) {
-            throw new PgCacheException("Failed to putIfAbsent value in cache", e);
-        }
+        return doPutIfAbsent(key, valueToStore, value, ttlSeconds, policy);
     }
 
     @Override
@@ -875,36 +842,83 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
         Object valueToStore = normalizeValue(value);
 
-        // Atomic insert for permanent entry
-        try (Connection conn = getValidatedConnection()) {
-            String deleteExpiredSql = "DELETE FROM " + tableName +
-                    " WHERE key = ? AND (" + EXPIRED_WHERE_CLAUSE + ")";
-            try (PreparedStatement deleteStmt = conn.prepareStatement(deleteExpiredSql)) {
-                deleteStmt.setString(1, key);
-                if (deleteStmt.executeUpdate() > 0) {
-                    invalidateSizeCache();
-                }
+        return doPutIfAbsent(key, valueToStore, value, null, null);
+    }
+
+    /**
+     * Single-statement, single-connection insert-if-absent.
+     *
+     * <p>The UPSERT overwrites only logically expired rows (an expired row is
+     * equivalent to an absent key), and the same statement returns the existing
+     * live value on conflict — no separate DELETE/SELECT that could race or
+     * require a second pooled connection.</p>
+     */
+    private Optional<Object> doPutIfAbsent(String key, Object valueToStore, Object originalValue,
+                                           Integer ttlSeconds, TTLPolicy policy) {
+        String sql = "WITH attempt AS (" +
+                     "INSERT INTO " + tableName + " AS t (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
+                     "VALUES (?, ?::jsonb, now(), ?, ?, now()) " +
+                     "ON CONFLICT (key) DO UPDATE SET " +
+                     "value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, " +
+                     "ttl_seconds = EXCLUDED.ttl_seconds, ttl_policy = EXCLUDED.ttl_policy, " +
+                     "last_accessed = EXCLUDED.last_accessed " +
+                     "WHERE NOT " + notExpiredClause("t.") + " " +
+                     "RETURNING t.key" +
+                     ") SELECT EXISTS(SELECT 1 FROM attempt) AS inserted, " +
+                     "(SELECT s.value FROM " + tableName + " s WHERE s.key = ? " +
+                     "AND NOT EXISTS (SELECT 1 FROM attempt)) AS existing_value";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            String jsonValue = objectMapper.writeValueAsString(valueToStore);
+
+            stmt.setString(1, key);
+            stmt.setString(2, jsonValue);
+            if (ttlSeconds != null) {
+                stmt.setInt(3, ttlSeconds);
+            } else {
+                stmt.setNull(3, java.sql.Types.INTEGER);
             }
+            stmt.setString(4, policy != null ? policy.name() : TTLPolicy.ABSOLUTE.name());
+            stmt.setString(5, key);
 
-            String insertSql = "INSERT INTO " + tableName +
-                    " (key, value, updated_at, ttl_seconds) " +
-                    "VALUES (?, ?::jsonb, now(), NULL) " +
-                    "ON CONFLICT (key) DO NOTHING";
-            try (PreparedStatement stmt = conn.prepareStatement(insertSql)) {
-                String jsonValue = objectMapper.writeValueAsString(valueToStore);
+            try (ResultSet rs = stmt.executeQuery()) {
+                rs.next();
+                boolean inserted = rs.getBoolean("inserted");
 
-                stmt.setString(1, key);
-                stmt.setString(2, jsonValue);
-
-                int inserted = stmt.executeUpdate();
-
-                if (inserted > 0) {
+                if (inserted) {
                     putCount.incrementAndGet();
                     invalidateSizeCache();
+                    fireOnPut(key, originalValue);
                     return Optional.empty();
                 }
 
-                return get(key, Object.class, false);
+                String existingJson = rs.getString("existing_value");
+                if (existingJson == null) {
+                    // Conflicting row was committed concurrently after our snapshot:
+                    // visible to the conflict arbiter but not to the subselect.
+                    // Re-read on the same connection (new snapshot).
+                    try (PreparedStatement reread = conn.prepareStatement(
+                            "SELECT value FROM " + tableName + " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE)) {
+                        reread.setString(1, key);
+                        try (ResultSet rrs = reread.executeQuery()) {
+                            if (rrs.next()) {
+                                existingJson = rrs.getString(1);
+                            }
+                        }
+                    }
+                }
+                if (existingJson == null) {
+                    // The conflicting row expired/vanished immediately after the
+                    // attempt — the key is absent now, but our value was not
+                    // stored. Report the (stale) absence honestly as empty per
+                    // the interface contract; callers re-invoke on their next cycle.
+                    return Optional.empty();
+                }
+
+                Object existing = objectMapper.readValue(existingJson, Object.class);
+                return Optional.of(existing);
             }
         } catch (SQLException | JsonProcessingException e) {
             throw new PgCacheException("Failed to putIfAbsent value in cache", e);
