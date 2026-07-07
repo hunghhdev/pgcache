@@ -88,18 +88,18 @@ final class SchemaManager {
     }
 
     private String createGinIndexSql() {
-        return "CREATE INDEX IF NOT EXISTS " + tableName + "_value_gin_idx " +
+        return "CREATE INDEX IF NOT EXISTS " + identifierName() + "_value_gin_idx " +
                "ON " + tableName + " USING GIN (value jsonb_path_ops)";
     }
 
     private String createTtlIndexSql() {
-        return "CREATE INDEX IF NOT EXISTS " + tableName + "_ttl_idx " +
+        return "CREATE INDEX IF NOT EXISTS " + identifierName() + "_ttl_idx " +
                "ON " + tableName + " (updated_at, ttl_seconds) " +
                "WHERE ttl_seconds IS NOT NULL";
     }
 
     private String createSlidingTtlIndexSql() {
-        return "CREATE INDEX IF NOT EXISTS " + tableName + "_sliding_ttl_idx " +
+        return "CREATE INDEX IF NOT EXISTS " + identifierName() + "_sliding_ttl_idx " +
                "ON " + tableName + " (ttl_policy, last_accessed) " +
                "WHERE ttl_policy = 'SLIDING'";
     }
