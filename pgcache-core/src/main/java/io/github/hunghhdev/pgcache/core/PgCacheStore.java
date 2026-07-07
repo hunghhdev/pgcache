@@ -407,7 +407,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         private ObjectMapper objectMapper;
         private boolean autoCreateTable = true;
         private boolean enableBackgroundCleanup = false;
-        private long cleanupIntervalMinutes = DEFAULT_CLEANUP_INTERVAL_MINUTES;
+        private Duration cleanupInterval = Duration.ofMinutes(DEFAULT_CLEANUP_INTERVAL_MINUTES);
         private boolean allowNullValues = false;
         private String tableName = DEFAULT_TABLE_NAME;
         private List<CacheEventListener> eventListeners = new ArrayList<>();
@@ -464,11 +464,25 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         /**
          * Sets the interval for background cleanup.
          *
-         * @param cleanupIntervalMinutes cleanup interval in minutes
+         * @param cleanupIntervalMinutes cleanup interval in minutes, must be positive
          * @return this builder
          */
         public Builder cleanupIntervalMinutes(long cleanupIntervalMinutes) {
-            this.cleanupIntervalMinutes = cleanupIntervalMinutes;
+            return cleanupInterval(Duration.ofMinutes(cleanupIntervalMinutes));
+        }
+
+        /**
+         * Sets the interval for background cleanup. Supports sub-minute intervals.
+         *
+         * @param cleanupInterval cleanup interval, must be positive
+         * @return this builder
+         * @since 1.7.1
+         */
+        public Builder cleanupInterval(Duration cleanupInterval) {
+            if (cleanupInterval == null || cleanupInterval.isZero() || cleanupInterval.isNegative()) {
+                throw new IllegalArgumentException("cleanupInterval must be positive, got: " + cleanupInterval);
+            }
+            this.cleanupInterval = cleanupInterval;
             return this;
         }
         
@@ -521,14 +535,14 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             if (objectMapper == null) {
                 objectMapper = new ObjectMapper();
             }
-            return new PgCacheStore(dataSource, objectMapper, tableName, autoCreateTable, 
-                                  enableBackgroundCleanup, cleanupIntervalMinutes, allowNullValues,
+            return new PgCacheStore(dataSource, objectMapper, tableName, autoCreateTable,
+                                  enableBackgroundCleanup, cleanupInterval, allowNullValues,
                                   eventListeners, asyncExecutor);
         }
     }
 
     private PgCacheStore(DataSource dataSource, ObjectMapper objectMapper, String tableName, boolean autoCreateTable,
-                         boolean enableBackgroundCleanup, long cleanupIntervalMinutes, boolean allowNullValues,
+                         boolean enableBackgroundCleanup, Duration cleanupInterval, boolean allowNullValues,
                          List<CacheEventListener> eventListeners, Executor asyncExecutor) {
         this.dataSource = dataSource;
         this.objectMapper = objectMapper;
@@ -553,7 +567,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
 
         if (enableBackgroundCleanup) {
-            this.cleanupScheduler = new BackgroundCleanupScheduler(cleanupIntervalMinutes, this::cleanupExpired);
+            this.cleanupScheduler = new BackgroundCleanupScheduler(cleanupInterval, this::cleanupExpired);
             cleanupScheduler.start();
             cleanupScheduler.registerShutdownHook();
         } else {

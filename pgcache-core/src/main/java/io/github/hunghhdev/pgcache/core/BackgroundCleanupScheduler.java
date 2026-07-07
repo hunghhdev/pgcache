@@ -3,6 +3,7 @@ package io.github.hunghhdev.pgcache.core;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -20,13 +21,16 @@ final class BackgroundCleanupScheduler {
     static final long DEFAULT_INTERVAL_MINUTES = 5;
     private static final long SHUTDOWN_AWAIT_SECONDS = 5;
 
-    private final long intervalMinutes;
+    private final Duration interval;
     private final Runnable cleanupTask;
 
     private volatile ScheduledExecutorService executor;
 
-    BackgroundCleanupScheduler(long intervalMinutes, Runnable cleanupTask) {
-        this.intervalMinutes = intervalMinutes;
+    BackgroundCleanupScheduler(Duration interval, Runnable cleanupTask) {
+        if (interval == null || interval.isZero() || interval.isNegative()) {
+            throw new IllegalArgumentException("Cleanup interval must be positive, got: " + interval);
+        }
+        this.interval = interval;
         this.cleanupTask = cleanupTask;
     }
 
@@ -45,8 +49,8 @@ final class BackgroundCleanupScheduler {
             } catch (Exception e) {
                 logger.warn("Background cleanup failed", e);
             }
-        }, intervalMinutes, intervalMinutes, TimeUnit.MINUTES);
-        logger.info("Started background cleanup with interval: {} minutes", intervalMinutes);
+        }, interval.toMillis(), interval.toMillis(), TimeUnit.MILLISECONDS);
+        logger.info("Started background cleanup with interval: {}", interval);
     }
 
     void shutdown() {

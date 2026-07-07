@@ -264,7 +264,7 @@ public class PgCacheManager implements CacheManager, DisposableBean {
 
         if (config.isBackgroundCleanupEnabled() && config.getBackgroundCleanupInterval() != null) {
             builder.enableBackgroundCleanup(true)
-                   .cleanupIntervalMinutes(config.getBackgroundCleanupInterval().toMinutes());
+                   .cleanupInterval(config.getBackgroundCleanupInterval());
         }
 
         eventListeners.forEach(builder::addEventListener);

@@ -60,6 +60,50 @@ class PgCacheStoreTTLCleanupTest {
     }
 
     @Test
+    @Timeout(30)
+    void backgroundCleanupSupportsSubMinuteIntervals() throws Exception {
+        PGSimpleDataSource dataSource = new PGSimpleDataSource();
+        dataSource.setUrl(postgres.getJdbcUrl());
+        dataSource.setUser(postgres.getUsername());
+        dataSource.setPassword(postgres.getPassword());
+
+        try (PgCacheStore subMinuteCache = PgCacheStore.builder()
+                .dataSource(dataSource)
+                .tableName("pgcache_subminute")
+                .autoCreateTable(true)
+                .enableBackgroundCleanup(true)
+                .cleanupInterval(Duration.ofSeconds(1))
+                .build()) {
+
+            subMinuteCache.put("short-lived", "value", Duration.ofSeconds(1));
+
+            // Wait for expiry plus at least one sub-minute cleanup run
+            Thread.sleep(3500);
+
+            // The row must be physically deleted, not just filtered by reads
+            try (Connection conn = dataSource.getConnection();
+                 PreparedStatement stmt = conn.prepareStatement(
+                         "SELECT COUNT(*) FROM pgcache_subminute WHERE key = ?")) {
+                stmt.setString(1, "short-lived");
+                try (java.sql.ResultSet rs = stmt.executeQuery()) {
+                    assertTrue(rs.next());
+                    assertEquals(0, rs.getInt(1),
+                            "expired row must be removed by sub-minute background cleanup");
+                }
+            }
+        }
+    }
+
+    @Test
+    void rejectsNonPositiveCleanupInterval() {
+        PgCacheStore.Builder builder = PgCacheStore.builder();
+        assertThrows(IllegalArgumentException.class, () -> builder.cleanupInterval(Duration.ZERO));
+        assertThrows(IllegalArgumentException.class, () -> builder.cleanupInterval(Duration.ofSeconds(-1)));
+        assertThrows(IllegalArgumentException.class, () -> builder.cleanupInterval(null));
+        assertThrows(IllegalArgumentException.class, () -> builder.cleanupIntervalMinutes(0));
+    }
+
+    @Test
     void testManualCleanupExpired() {
         // Add entries with different TTLs
         cache.put("short-lived", "value1", Duration.ofSeconds(1));
