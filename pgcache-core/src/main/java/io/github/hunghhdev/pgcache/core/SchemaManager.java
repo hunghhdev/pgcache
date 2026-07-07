@@ -41,13 +41,39 @@ final class SchemaManager {
     }
 
     boolean tableExists() {
-        try (Connection conn = dataSource.getConnection();
-             ResultSet rs = conn.getMetaData().getTables(
-                     null, schemaName(), identifierName(), new String[]{"TABLE"})) {
-            return rs.next();
+        try (Connection conn = dataSource.getConnection()) {
+            return tableExists(conn);
         } catch (SQLException e) {
             throw new PgCacheException("Failed to check if table exists", e);
         }
+    }
+
+    private boolean tableExists(Connection conn) throws SQLException {
+        String escape = conn.getMetaData().getSearchStringEscape();
+        try (ResultSet rs = conn.getMetaData().getTables(
+                null, metadataPattern(schemaName(), escape),
+                metadataPattern(identifierName(), escape), new String[]{"TABLE"})) {
+            return rs.next();
+        }
+    }
+
+    /**
+     * {@code DatabaseMetaData.getTables} treats its arguments as LIKE patterns,
+     * so {@code _}/{@code %} must be escaped. DDL uses the name unquoted, which
+     * PostgreSQL folds to lowercase — fold the lookup the same way.
+     */
+    private static String metadataPattern(String identifier, String escape) {
+        if (identifier == null) {
+            return null;
+        }
+        String folded = identifier.toLowerCase(java.util.Locale.ROOT);
+        if (escape == null || escape.isEmpty()) {
+            return folded;
+        }
+        return folded
+                .replace(escape, escape + escape)
+                .replace("_", escape + "_")
+                .replace("%", escape + "%");
     }
 
     private void performInitialization() {
@@ -60,11 +86,7 @@ final class SchemaManager {
                 conn.setAutoCommit(true);
             }
 
-            boolean tableAlreadyExists;
-            try (ResultSet rs = conn.getMetaData().getTables(
-                    null, schemaName(), identifierName(), new String[]{"TABLE"})) {
-                tableAlreadyExists = rs.next();
-            }
+            boolean tableAlreadyExists = tableExists(conn);
 
             stmt.execute(createTableSql());
             stmt.execute(createGinIndexSql());

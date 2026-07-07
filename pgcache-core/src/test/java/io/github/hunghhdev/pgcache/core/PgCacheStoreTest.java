@@ -73,7 +73,8 @@ class PgCacheStoreTest {
         // Arrange - Mock DatabaseMetaData
         DatabaseMetaData metaData = mock(DatabaseMetaData.class);
         when(connection.getMetaData()).thenReturn(metaData);
-        when(metaData.getTables(null, null, "pgcache_store", new String[]{"TABLE"}))
+        when(metaData.getSearchStringEscape()).thenReturn("\\");
+        when(metaData.getTables(null, null, "pgcache\\_store", new String[]{"TABLE"}))
                 .thenReturn(resultSet);
         when(resultSet.next()).thenReturn(false); // Table doesn't exist
         
