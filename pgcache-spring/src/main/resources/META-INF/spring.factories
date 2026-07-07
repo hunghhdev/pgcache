@@ -1,3 +1,4 @@
 org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
 io.github.hunghhdev.pgcache.spring.PgCacheAutoConfiguration,\
+io.github.hunghhdev.pgcache.spring.PgCacheHealthAutoConfiguration,\
 io.github.hunghhdev.pgcache.spring.PgCacheMetricsAutoConfiguration

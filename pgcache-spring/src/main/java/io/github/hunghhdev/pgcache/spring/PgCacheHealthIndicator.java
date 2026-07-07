@@ -5,8 +5,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.HealthIndicator;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
-import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -14,9 +12,8 @@ import java.util.Map;
 /**
  * Health indicator for PgCache.
  * Provides health information for Spring Boot Actuator.
+ * Registered automatically by {@link PgCacheHealthAutoConfiguration}.
  */
-@Component
-@ConditionalOnClass(name = "org.springframework.boot.actuate.health.HealthIndicator")
 public class PgCacheHealthIndicator implements HealthIndicator {
     
     private static final Logger logger = LoggerFactory.getLogger(PgCacheHealthIndicator.class);
