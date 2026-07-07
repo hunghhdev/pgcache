@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    name: Test (JDK ${{ matrix.java }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ['11', '17', '21']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ matrix.java }}
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build and test
+        run: mvn clean verify -B
+
+  spring-boot-3:
+    name: Test against Spring Boot 3 (JDK 17)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # Overrides the Spring Boot / Framework versions so the auto-configuration
+      # (registered via AutoConfiguration.imports) is exercised on Boot 3
+      - name: Test pgcache-spring against Boot 3
+        run: >
+          mvn -B -pl pgcache-spring -am test
+          -Dspring.boot.version=3.2.12
+          -Dspring.framework.version=6.1.16
+          -Dmicrometer.version=1.12.13
+          -Dslf4j.version=2.0.13
