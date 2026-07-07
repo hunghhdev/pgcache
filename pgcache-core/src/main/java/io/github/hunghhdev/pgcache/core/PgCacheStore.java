@@ -769,10 +769,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         validateKey(key);
         int ttlSeconds = normalizeTtlSeconds(newTtl);
 
-        // First try to update existing entry (may include permanent entries)
-        String sql = "UPDATE " + tableName + 
+        // Update live entries only (permanent or not yet expired) — a logically
+        // expired row awaiting cleanup must not be resurrected with its stale value
+        String sql = "UPDATE " + tableName +
                      " SET ttl_seconds = ?, updated_at = CURRENT_TIMESTAMP, last_accessed = CURRENT_TIMESTAMP " +
-                     " WHERE key = ?";
+                     " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE;
 
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -786,7 +787,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             if (success) {
                 logger.debug("Successfully refreshed TTL for key '{}' to {} seconds", key, ttlSeconds);
             } else {
-                logger.debug("Failed to refresh TTL for key '{}' - key not found", key);
+                logger.debug("Failed to refresh TTL for key '{}' - key not found or expired", key);
             }
             
             return success;

@@ -202,6 +202,37 @@ class PgCacheStoreTTLRefreshTest {
     }
     
     @Test
+    void shouldNotResurrectExpiredAbsoluteEntryOnRefresh() throws InterruptedException {
+        String key = "expired-absolute-key";
+        cacheStore.put(key, "expired-value", Duration.ofSeconds(1), TTLPolicy.ABSOLUTE);
+
+        // Wait until logically expired; the row is still physically present
+        // because background cleanup is not running in this test
+        Thread.sleep(1500);
+        assertFalse(cacheStore.get(key, String.class).isPresent());
+
+        boolean refreshed = cacheStore.refreshTTL(key, Duration.ofSeconds(30));
+        assertFalse(refreshed, "refreshTTL must not resurrect a logically expired entry");
+
+        // The stale value must not become readable again
+        assertFalse(cacheStore.get(key, String.class).isPresent());
+    }
+
+    @Test
+    void shouldNotResurrectExpiredSlidingEntryOnRefresh() throws InterruptedException {
+        String key = "expired-sliding-key";
+        cacheStore.put(key, "expired-value", Duration.ofSeconds(1), TTLPolicy.SLIDING);
+
+        Thread.sleep(1500);
+        assertFalse(cacheStore.get(key, String.class).isPresent());
+
+        boolean refreshed = cacheStore.refreshTTL(key, Duration.ofSeconds(30));
+        assertFalse(refreshed, "refreshTTL must not resurrect a logically expired entry");
+
+        assertFalse(cacheStore.get(key, String.class).isPresent());
+    }
+
+    @Test
     void testRefreshTTLMultipleTimes() throws InterruptedException {
         String key = "multi-refresh-key";
         String value = "multi-refresh-value";
