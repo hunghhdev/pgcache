@@ -96,7 +96,6 @@ class PgCacheStoreTest {
         when(preparedStatement.executeQuery()).thenReturn(resultSet);
         when(resultSet.next()).thenReturn(true);
         when(resultSet.getString("value")).thenReturn(jsonValue);
-        when(resultSet.getObject("ttl_seconds", Integer.class)).thenReturn(60);
 
         // Act
         Optional<TestObject> result = cacheStore.get(key, TestObject.class);
@@ -285,7 +284,6 @@ class PgCacheStoreTest {
         when(preparedStatement.executeQuery()).thenReturn(resultSet);
         when(resultSet.next()).thenReturn(true);
         when(resultSet.getString("value")).thenReturn(jsonValue);
-        when(resultSet.getObject("ttl_seconds", Integer.class)).thenReturn(null); // No TTL
 
         // Act
         Optional<TestObject> result = cacheStore.get(key, TestObject.class);
@@ -413,7 +411,6 @@ class PgCacheStoreTest {
         when(preparedStatement.executeQuery()).thenReturn(resultSet);
         when(resultSet.next()).thenReturn(true);
         when(resultSet.getString("value")).thenReturn(json);
-        when(resultSet.getObject("ttl_seconds", Integer.class)).thenReturn(60);
 
         // Act
         CompletableFuture<Optional<TestObject>> future = cacheStore.getAsync(key, TestObject.class);

@@ -613,13 +613,24 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     public <T> Optional<T> get(String key, Class<T> clazz, boolean refreshTTL) {
         validateKey(key);
 
-        String sql = "SELECT value, updated_at, ttl_seconds, ttl_policy, last_accessed FROM " + tableName +
-                     " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE;
+        // Single statement: read the live row and, in the same snapshot, slide
+        // last_accessed for SLIDING entries when refreshTTL is requested.
+        // Keeping this atomic avoids checking out a second pooled connection
+        // and cannot re-arm a row that has already expired.
+        String sql = "WITH hit AS (" +
+                     "SELECT key, value, ttl_seconds, ttl_policy FROM " + tableName +
+                     " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE +
+                     "), refresh AS (" +
+                     "UPDATE " + tableName + " t SET last_accessed = now() FROM hit" +
+                     " WHERE CAST(? AS boolean) AND t.key = hit.key" +
+                     " AND hit.ttl_policy = 'SLIDING' AND hit.ttl_seconds IS NOT NULL" +
+                     ") SELECT value FROM hit";
 
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
             stmt.setString(1, key);
+            stmt.setBoolean(2, refreshTTL);
 
             try (ResultSet rs = stmt.executeQuery()) {
                 if (!rs.next()) {
@@ -627,32 +638,17 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                     return Optional.empty();
                 }
 
-                // Get the values
                 String jsonValue = rs.getString("value");
-                Integer ttlSeconds = rs.getObject("ttl_seconds", Integer.class);
-                String ttlPolicyStr = rs.getString("ttl_policy");
-
-                TTLPolicy ttlPolicy = TTLPolicy.parse(ttlPolicyStr).orElseGet(() -> {
-                    if (ttlPolicyStr != null) {
-                        logger.warn("Invalid TTL policy '{}' for key '{}', defaulting to ABSOLUTE", ttlPolicyStr, key);
-                    }
-                    return TTLPolicy.ABSOLUTE;
-                });
-
-                // Update last_accessed timestamp for sliding TTL if refreshTTL is true
-                if (refreshTTL && ttlPolicy == TTLPolicy.SLIDING && ttlSeconds != null) {
-                    updateLastAccessed(key);
-                }
-
-                // Deserialize the value
-                Object rawResult = objectMapper.readValue(jsonValue, Object.class);
 
                 // Check if this is a null marker
-                if (allowNullValues && NullValueMarker.isMarker(rawResult)) {
-                    @SuppressWarnings("unchecked")
-                    T marker = (T) NullValueMarker.getInstance();
-                    hitCount.incrementAndGet();
-                    return Optional.of(marker);
+                if (allowNullValues) {
+                    Object rawResult = objectMapper.readValue(jsonValue, Object.class);
+                    if (NullValueMarker.isMarker(rawResult)) {
+                        @SuppressWarnings("unchecked")
+                        T marker = (T) NullValueMarker.getInstance();
+                        hitCount.incrementAndGet();
+                        return Optional.of(marker);
+                    }
                 }
 
                 // Normal deserialization with the requested type
@@ -665,20 +661,6 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             }
         } catch (SQLException e) {
             throw new PgCacheException("Failed to get value from cache", e);
-        }
-    }
-
-    private void updateLastAccessed(String key) {
-        String sql = "UPDATE " + tableName + " SET last_accessed = now() WHERE key = ?";
-
-        try (Connection conn = getValidatedConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-
-            stmt.setString(1, key);
-            stmt.executeUpdate();
-
-        } catch (SQLException e) {
-            logger.warn("Failed to update last_accessed timestamp for key '{}': {}", key, e.getMessage());
         }
     }
 
