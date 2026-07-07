@@ -25,6 +25,7 @@ final class BackgroundCleanupScheduler {
     private final Runnable cleanupTask;
 
     private volatile ScheduledExecutorService executor;
+    private volatile Thread shutdownHook;
 
     BackgroundCleanupScheduler(Duration interval, Runnable cleanupTask) {
         if (interval == null || interval.isZero() || interval.isNegative()) {
@@ -54,6 +55,7 @@ final class BackgroundCleanupScheduler {
     }
 
     void shutdown() {
+        deregisterShutdownHook();
         if (executor != null && !executor.isShutdown()) {
             executor.shutdown();
             try {
@@ -69,9 +71,29 @@ final class BackgroundCleanupScheduler {
     }
 
     void registerShutdownHook() {
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+        Thread hook = new Thread(() -> {
             logger.info("Shutting down PgCache cleanup executor via shutdown hook...");
+            shutdownHook = null; // the JVM is already shutting down; do not try to remove the hook
             shutdown();
-        }, "pgcache-shutdown-hook"));
+        }, "pgcache-shutdown-hook");
+        shutdownHook = hook;
+        Runtime.getRuntime().addShutdownHook(hook);
+    }
+
+    /**
+     * Removes the shutdown hook registered by {@link #registerShutdownHook()}.
+     * Without this, every closed store leaks its hook (and pins the store and
+     * its DataSource) for the lifetime of the JVM — painful on redeploys.
+     */
+    private void deregisterShutdownHook() {
+        Thread hook = shutdownHook;
+        if (hook != null) {
+            shutdownHook = null;
+            try {
+                Runtime.getRuntime().removeShutdownHook(hook);
+            } catch (IllegalStateException alreadyShuttingDown) {
+                // JVM shutdown in progress — nothing to clean up
+            }
+        }
     }
 }

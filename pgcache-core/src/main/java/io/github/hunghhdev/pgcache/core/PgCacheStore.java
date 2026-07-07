@@ -17,6 +17,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.sql.DataSource;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -104,8 +105,18 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     private final AtomicLong evictionCount = new AtomicLong(0);
 
     // Cache for size() method to avoid expensive full table scans
-    private volatile int cachedSize = -1;
-    private volatile Instant lastSizeUpdate = Instant.MIN;
+    private final AtomicReference<SizeSnapshot> sizeCache = new AtomicReference<>();
+
+    /** Size + timestamp published atomically so an invalidation cannot be lost. */
+    private static final class SizeSnapshot {
+        final int size;
+        final Instant takenAt;
+
+        SizeSnapshot(int size, Instant takenAt) {
+            this.size = size;
+            this.takenAt = takenAt;
+        }
+    }
 
     /**
      * Creates a PgCacheStore with specified dataSource.
@@ -289,8 +300,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     }
 
     void invalidateSizeCache() {
-        cachedSize = -1;
-        lastSizeUpdate = Instant.MIN;
+        sizeCache.set(null);
     }
 
     private void fireOnPut(String key, Object value) {
@@ -307,12 +317,13 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     @Override
     public int size() {
-        if (cachedSize >= 0 && 
-            Duration.between(lastSizeUpdate, Instant.now()).compareTo(SIZE_CACHE_DURATION) < 0) {
-            logger.trace("Returning cached size: {}", cachedSize);
-            return cachedSize;
+        SizeSnapshot snapshot = sizeCache.get();
+        if (snapshot != null &&
+            Duration.between(snapshot.takenAt, Instant.now()).compareTo(SIZE_CACHE_DURATION) < 0) {
+            logger.trace("Returning cached size: {}", snapshot.size);
+            return snapshot.size;
         }
-        
+
         String sql = "SELECT COUNT(*) FROM " + tableName + " WHERE " + NOT_EXPIRED_WHERE_CLAUSE;
 
         try (Connection conn = getValidatedConnection();
@@ -320,10 +331,13 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
              ResultSet rs = stmt.executeQuery(sql)) {
 
             if (rs.next()) {
-                cachedSize = rs.getInt(1);
-                lastSizeUpdate = Instant.now();
-                logger.debug("Cache size updated: {}", cachedSize);
-                return cachedSize;
+                int size = rs.getInt(1);
+                // CAS against the snapshot we started from: if a concurrent write
+                // invalidated the cache while COUNT ran, do not overwrite that
+                // invalidation with a stale count
+                sizeCache.compareAndSet(snapshot, new SizeSnapshot(size, Instant.now()));
+                logger.debug("Cache size updated: {}", size);
+                return size;
             }
 
             return 0;
@@ -634,12 +648,17 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 return conn;
 
             } catch (SQLException e) {
+                if (!isTransientConnectionFailure(e)) {
+                    // Auth failures, bad URLs etc. cannot succeed on retry —
+                    // retrying only adds latency on a permanently broken pool
+                    throw e;
+                }
                 lastException = e;
                 logger.warn("Connection attempt {} failed: {}", attempt, e.getMessage());
-                
+
                 if (attempt < MAX_RETRY_ATTEMPTS) {
                     try {
-                        Thread.sleep(RETRY_DELAY_MS * attempt); // Exponential backoff
+                        Thread.sleep(RETRY_DELAY_MS << (attempt - 1)); // exponential backoff
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                         throw new SQLException("Connection retry interrupted", ie);
@@ -649,6 +668,19 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
         
         throw new SQLException("Failed to obtain connection after " + MAX_RETRY_ATTEMPTS + " attempts", lastException);
+    }
+
+    /**
+     * Only SQLState class 08 (connection exception) and transient exceptions
+     * are worth retrying; anything else (authentication, syntax, config)
+     * fails identically on every attempt.
+     */
+    private static boolean isTransientConnectionFailure(SQLException e) {
+        if (e instanceof java.sql.SQLTransientException) {
+            return true;
+        }
+        String sqlState = e.getSQLState();
+        return sqlState != null && sqlState.startsWith("08");
     }
 
     @Override
