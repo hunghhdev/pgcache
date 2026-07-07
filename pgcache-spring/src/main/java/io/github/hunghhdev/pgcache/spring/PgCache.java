@@ -13,6 +13,7 @@ import org.springframework.cache.Cache;
 import java.time.Duration;
 import java.util.Optional;
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Spring Cache implementation backed by PgCacheStore.
@@ -27,6 +28,13 @@ public class PgCache implements Cache {
     private final Duration defaultTtl;
     private final boolean allowNullValues;
     private final TTLPolicy ttlPolicy;
+
+    // Per-cache statistics: the store's counters are shared by every cache on
+    // the same store, so meters tagged per cache must not read them
+    private final AtomicLong cacheHits = new AtomicLong();
+    private final AtomicLong cacheMisses = new AtomicLong();
+    private final AtomicLong cachePuts = new AtomicLong();
+    private final AtomicLong cacheEvictions = new AtomicLong();
     
     /**
      * Create a new PgCache instance.
@@ -64,14 +72,17 @@ public class PgCache implements Cache {
             String keyStr = toKeyString(key);
             Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, true);
             if (!optionalValue.isPresent()) {
+                cacheMisses.incrementAndGet();
                 return null;
             }
+            cacheHits.incrementAndGet();
             Object value = optionalValue.get();
             if (value instanceof NullValueMarker) {
                 return new SimpleValueWrapper(null);
             }
             return new SimpleValueWrapper(value);
         } catch (Exception e) {
+            cacheMisses.incrementAndGet();
             logger.warn("Failed to get value from cache '{}' for key '{}': {}", name, key, e.getMessage());
             return null;
         }
@@ -86,14 +97,17 @@ public class PgCache implements Cache {
             String keyStr = toKeyString(key);
             Optional<T> optionalValue = cacheStore.get(keyStr, type, true);
             if (!optionalValue.isPresent()) {
+                cacheMisses.incrementAndGet();
                 return null;
             }
+            cacheHits.incrementAndGet();
             T value = optionalValue.get();
             if (value instanceof NullValueMarker) {
                 return null;
             }
             return value;
         } catch (Exception e) {
+            cacheMisses.incrementAndGet();
             logger.warn("Failed to get value from cache '{}' for key '{}' with type {}: {}",
                        name, key, safeTypeName(type), e.getMessage());
             return null;
@@ -114,6 +128,7 @@ public class PgCache implements Cache {
             // Always refresh TTL - let the core decide based on the entry's TTL policy
             Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, true);
             if (optionalValue.isPresent()) {
+                cacheHits.incrementAndGet();
                 Object value = optionalValue.get();
                 // Check for null marker - indicates cached null value
                 if (value instanceof NullValueMarker) {
@@ -121,6 +136,7 @@ public class PgCache implements Cache {
                 }
                 return (T) value;
             }
+            cacheMisses.incrementAndGet();
 
             // Load value using the valueLoader
             try {
@@ -133,6 +149,7 @@ public class PgCache implements Cache {
                     } else {
                         cacheStore.put(keyStr, value);
                     }
+                    cachePuts.incrementAndGet();
                 }
 
                 return value;
@@ -166,7 +183,8 @@ public class PgCache implements Cache {
             } else {
                 cacheStore.put(keyStr, value);
             }
-            
+            cachePuts.incrementAndGet();
+
             logger.debug("Put value in cache '{}' for key '{}'", name, key);
         } catch (Exception e) {
             logger.error("Failed to put value in cache '{}' for key '{}': {}", name, key, e.getMessage());
@@ -205,6 +223,7 @@ public class PgCache implements Cache {
             }
 
             // Successfully inserted
+            cachePuts.incrementAndGet();
             logger.debug("Put value in cache '{}' for key '{}' (if absent)", name, key);
             return null;
 
@@ -222,6 +241,7 @@ public class PgCache implements Cache {
         try {
             String keyStr = toKeyString(key);
             cacheStore.evict(keyStr);
+            cacheEvictions.incrementAndGet();
             logger.debug("Evicted key '{}' from cache '{}'", key, name);
         } catch (Exception e) {
             logger.error("Failed to evict key '{}' from cache '{}': {}", key, name, e.getMessage());
@@ -246,6 +266,7 @@ public class PgCache implements Cache {
             
             // Evict if present
             cacheStore.evict(keyStr);
+            cacheEvictions.incrementAndGet();
             logger.debug("Evicted existing key '{}' from cache '{}'", key, name);
             return true;
             
@@ -361,6 +382,7 @@ public class PgCache implements Cache {
         try {
             String keyStr = toKeyString(key);
             cacheStore.put(keyStr, value, ttl, ttlPolicy);
+            cachePuts.incrementAndGet();
         } catch (Exception e) {
             logger.error("Failed to put value in cache '{}' for key '{}': {}", name, key, e.getMessage());
             throw new PgCacheException("Cache put operation failed for cache '" + name + "'", e);
@@ -459,6 +481,18 @@ public class PgCache implements Cache {
      */
     public CacheStatistics getStatistics() {
         return cacheStore.getStatistics();
+    }
+
+    /**
+     * Statistics scoped to THIS cache only, unlike {@link #getStatistics()}
+     * which reports the shared store-wide counters. Use these for anything
+     * tagged per cache (metrics, health details).
+     *
+     * @return per-cache statistics
+     * @since 1.8.0
+     */
+    public CacheStatistics getCacheStatistics() {
+        return new CacheStatistics(cacheHits.get(), cacheMisses.get(), cachePuts.get(), cacheEvictions.get());
     }
 
     /**

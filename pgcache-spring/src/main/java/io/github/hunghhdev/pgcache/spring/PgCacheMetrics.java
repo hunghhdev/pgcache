@@ -1,6 +1,5 @@
 package io.github.hunghhdev.pgcache.spring;
 
-import io.github.hunghhdev.pgcache.core.CacheStatistics;
 import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -51,10 +50,19 @@ public class PgCacheMetrics implements MeterBinder {
         this.tags = tags;
     }
 
+    private static final String[] METER_NAMES = {
+            "pgcache.gets", "pgcache.puts", "pgcache.evictions", "pgcache.size", "pgcache.hit.rate"
+    };
+
     @Override
     public void bindTo(MeterRegistry registry) {
+        // Rebinding must be idempotent: composite registries call bindTo more
+        // than once, and a recreated cache re-registers under identical tags —
+        // Micrometer would silently keep the meter bound to the OLD instance
+        removeExistingMeters(registry);
+
         // Cache hits counter
-        FunctionCounter.builder("pgcache.gets", cache, c -> c.getStatistics().getHitCount())
+        FunctionCounter.builder("pgcache.gets", cache, c -> c.getCacheStatistics().getHitCount())
                 .tags(tags)
                 .tag("cache", cacheName)
                 .tag("result", "hit")
@@ -62,7 +70,7 @@ public class PgCacheMetrics implements MeterBinder {
                 .register(registry);
 
         // Cache misses counter
-        FunctionCounter.builder("pgcache.gets", cache, c -> c.getStatistics().getMissCount())
+        FunctionCounter.builder("pgcache.gets", cache, c -> c.getCacheStatistics().getMissCount())
                 .tags(tags)
                 .tag("cache", cacheName)
                 .tag("result", "miss")
@@ -70,14 +78,14 @@ public class PgCacheMetrics implements MeterBinder {
                 .register(registry);
 
         // Cache puts counter
-        FunctionCounter.builder("pgcache.puts", cache, c -> c.getStatistics().getPutCount())
+        FunctionCounter.builder("pgcache.puts", cache, c -> c.getCacheStatistics().getPutCount())
                 .tags(tags)
                 .tag("cache", cacheName)
                 .description("The number of cache puts")
                 .register(registry);
 
         // Cache evictions counter
-        FunctionCounter.builder("pgcache.evictions", cache, c -> c.getStatistics().getEvictionCount())
+        FunctionCounter.builder("pgcache.evictions", cache, c -> c.getCacheStatistics().getEvictionCount())
                 .tags(tags)
                 .tag("cache", cacheName)
                 .description("The number of cache evictions")
@@ -91,11 +99,18 @@ public class PgCacheMetrics implements MeterBinder {
                 .register(registry);
 
         // Hit rate gauge
-        Gauge.builder("pgcache.hit.rate", cache, c -> c.getStatistics().getHitRate())
+        Gauge.builder("pgcache.hit.rate", cache, c -> c.getCacheStatistics().getHitRate())
                 .tags(tags)
                 .tag("cache", cacheName)
                 .description("The cache hit rate (0.0 - 1.0)")
                 .register(registry);
+    }
+
+    private void removeExistingMeters(MeterRegistry registry) {
+        for (String meterName : METER_NAMES) {
+            registry.find(meterName).tag("cache", cacheName).meters()
+                    .forEach(registry::remove);
+        }
     }
 
     /**

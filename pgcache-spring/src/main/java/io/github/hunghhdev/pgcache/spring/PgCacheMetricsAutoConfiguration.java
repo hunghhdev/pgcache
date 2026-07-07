@@ -32,7 +32,17 @@ public class PgCacheMetricsAutoConfiguration {
 
     @Bean
     public MeterBinder pgCacheMetricsBinder(PgCacheManager cacheManager) {
+        // bindTo may be invoked once per registry of a composite — track seen
+        // registries and register the cache-created listener exactly once
+        java.util.Set<io.micrometer.core.instrument.MeterRegistry> registries =
+                java.util.concurrent.ConcurrentHashMap.newKeySet();
+        java.util.concurrent.atomic.AtomicBoolean listenerRegistered =
+                new java.util.concurrent.atomic.AtomicBoolean();
+
         return registry -> {
+            if (!registries.add(registry)) {
+                return;
+            }
             for (String cacheName : cacheManager.getCacheNames()) {
                 Cache cache = cacheManager.getCache(cacheName);
                 if (cache instanceof PgCache) {
@@ -40,10 +50,12 @@ public class PgCacheMetricsAutoConfiguration {
                     logger.debug("Bound metrics for cache '{}'", cacheName);
                 }
             }
-            cacheManager.addCacheCreatedListener(cache -> {
-                new PgCacheMetrics(cache).bindTo(registry);
-                logger.debug("Bound metrics for newly created cache '{}'", cache.getName());
-            });
+            if (listenerRegistered.compareAndSet(false, true)) {
+                cacheManager.addCacheCreatedListener(cache -> registries.forEach(r -> {
+                    new PgCacheMetrics(cache).bindTo(r);
+                    logger.debug("Bound metrics for newly created cache '{}'", cache.getName());
+                }));
+            }
             logger.info("PgCache metrics enabled for {} caches", cacheManager.getCacheNames().size());
         };
     }
