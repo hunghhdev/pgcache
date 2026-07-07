@@ -11,7 +11,6 @@ import jakarta.enterprise.inject.Disposes;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Inject;
 import javax.sql.DataSource;
-import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -37,15 +36,21 @@ public class PgQuarkusCacheProducer {
     public PgCacheStore pgCacheStore() {
         logger.info("Creating PgCacheStore for Quarkus");
 
+        // The store is shared by every cache, so it must accept null markers
+        // when the global default OR any per-cache override allows null values.
+        // Per-cache enforcement happens in PgQuarkusCache.
+        boolean anyCacheAllowsNulls = config.allowNullValues() ||
+            config.caches().values().stream()
+                .anyMatch(cacheConfig -> cacheConfig.allowNullValues().orElse(false));
+
         PgCacheStore.Builder builder = PgCacheStore.builder()
             .dataSource(dataSource)
-            .allowNullValues(config.allowNullValues());
+            .allowNullValues(anyCacheAllowsNulls);
 
         // Configure background cleanup
         if (config.backgroundCleanup().enabled()) {
-            Duration interval = config.backgroundCleanup().interval();
             builder.enableBackgroundCleanup(true)
-                   .cleanupIntervalMinutes(interval.toMinutes());
+                   .cleanupInterval(config.backgroundCleanup().interval());
         }
 
         return builder.build();
