@@ -4,7 +4,6 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -91,6 +90,8 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
     private final String tableName;
+    /** Storage-key prefix ({@code "<namespace>:"}), or empty when un-namespaced. */
+    private final String keyPrefix;
     private final boolean allowNullValues;
     private final Executor asyncExecutor;
     private final CacheEventDispatcher eventDispatcher;
@@ -134,6 +135,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         this.dataSource = dataSource;
         this.objectMapper = new ObjectMapper();
         this.tableName = DEFAULT_TABLE_NAME;
+        this.keyPrefix = "";
         this.allowNullValues = false;
         this.eventListeners = new ArrayList<>();
         this.asyncExecutor = ForkJoinPool.commonPool();
@@ -207,7 +209,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             // Serialize the value to JSON
             String jsonValue = objectMapper.writeValueAsString(valueToStore);
 
-            stmt.setString(1, key);
+            stmt.setString(1, storageKey(key));
             stmt.setString(2, jsonValue);
 
             stmt.executeUpdate();
@@ -248,7 +250,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             // Serialize the value to JSON
             String jsonValue = objectMapper.writeValueAsString(valueToStore);
 
-            stmt.setString(1, key);
+            stmt.setString(1, storageKey(key));
             stmt.setString(2, jsonValue);
             stmt.setInt(3, ttlSeconds);
             stmt.setString(4, policy.name());
@@ -271,7 +273,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            stmt.setString(1, key);
+            stmt.setString(1, storageKey(key));
             int deleted = stmt.executeUpdate();
             if (deleted > 0) {
                 evictionCount.incrementAndGet();
@@ -285,12 +287,19 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     @Override
     public void clear() {
-        String sql = "DELETE FROM " + tableName;
+        // A namespaced store only clears its own keys — sharing one table
+        // across namespaces is the whole point of the option
+        String sql = keyPrefix.isEmpty()
+                ? "DELETE FROM " + tableName
+                : "DELETE FROM " + tableName + " WHERE key LIKE ? ESCAPE '\\'";
 
         try (Connection conn = getValidatedConnection();
-             Statement stmt = conn.createStatement()) {
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            int deleted = stmt.executeUpdate(sql);
+            if (!keyPrefix.isEmpty()) {
+                stmt.setString(1, scopedPattern("%"));
+            }
+            int deleted = stmt.executeUpdate();
             if (deleted > 0) {
                 evictionCount.addAndGet(deleted);
             }
@@ -326,23 +335,30 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             return snapshot.size;
         }
 
-        String sql = "SELECT COUNT(*) FROM " + tableName + " WHERE " + NOT_EXPIRED_WHERE_CLAUSE;
+        String sql = "SELECT COUNT(*) FROM " + tableName + " WHERE " +
+                     (keyPrefix.isEmpty() ? "" : "key LIKE ? ESCAPE '\\' AND ") +
+                     NOT_EXPIRED_WHERE_CLAUSE;
 
         try (Connection conn = getValidatedConnection();
-             Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery(sql)) {
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            if (rs.next()) {
-                int size = rs.getInt(1);
-                // CAS against the snapshot we started from: if a concurrent write
-                // invalidated the cache while COUNT ran, do not overwrite that
-                // invalidation with a stale count
-                sizeCache.compareAndSet(snapshot, new SizeSnapshot(size, Instant.now()));
-                logger.debug("Cache size updated: {}", size);
-                return size;
+            if (!keyPrefix.isEmpty()) {
+                stmt.setString(1, scopedPattern("%"));
             }
 
-            return 0;
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    int size = rs.getInt(1);
+                    // CAS against the snapshot we started from: if a concurrent write
+                    // invalidated the cache while COUNT ran, do not overwrite that
+                    // invalidation with a stale count
+                    sizeCache.compareAndSet(snapshot, new SizeSnapshot(size, Instant.now()));
+                    logger.debug("Cache size updated: {}", size);
+                    return size;
+                }
+
+                return 0;
+            }
         } catch (SQLException e) {
             logger.error("Failed to get cache size", e);
             throw new PgCacheException("Failed to get cache size", e);
@@ -361,7 +377,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            stmt.setString(1, pattern);
+            stmt.setString(1, scopedPattern(pattern));
 
             try (ResultSet rs = stmt.executeQuery()) {
                 return rs.next() ? rs.getInt(1) : 0;
@@ -381,7 +397,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            stmt.setString(1, key);
+            stmt.setString(1, storageKey(key));
 
             try (ResultSet rs = stmt.executeQuery()) {
                 return rs.next();
@@ -474,6 +490,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         private Duration cleanupInterval = Duration.ofMinutes(DEFAULT_CLEANUP_INTERVAL_MINUTES);
         private boolean allowNullValues = false;
         private String tableName = DEFAULT_TABLE_NAME;
+        private String namespace;
         private List<CacheEventListener> eventListeners = new ArrayList<>();
         private Executor asyncExecutor;
 
@@ -574,6 +591,30 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             return this;
         }
 
+        /**
+         * Scopes this store to a namespace: every key is transparently prefixed
+         * with {@code "<namespace>:"} in storage, and scoped operations
+         * ({@code clear}, {@code size}, {@code getKeys}, {@code scanKeys},
+         * {@code evictByPattern}) only see this namespace. Multiple namespaced
+         * stores can safely share one table. Keys returned to the caller never
+         * include the prefix. {@code cleanupExpired} remains table-wide.
+         *
+         * @param namespace non-empty, must not contain {@code ':'}
+         * @return this builder
+         * @since 1.9.0
+         */
+        public Builder namespace(String namespace) {
+            if (namespace == null || namespace.trim().isEmpty()) {
+                throw new IllegalArgumentException("namespace cannot be null or empty");
+            }
+            String trimmed = namespace.trim();
+            if (trimmed.indexOf(':') >= 0) {
+                throw new IllegalArgumentException("namespace must not contain ':' (reserved as key separator)");
+            }
+            this.namespace = trimmed;
+            return this;
+        }
+
         public Builder addEventListener(CacheEventListener listener) {
             if (listener != null) {
                 this.eventListeners.add(listener);
@@ -599,13 +640,14 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             if (objectMapper == null) {
                 objectMapper = new ObjectMapper();
             }
-            return new PgCacheStore(dataSource, objectMapper, tableName, autoCreateTable,
+            return new PgCacheStore(dataSource, objectMapper, tableName, namespace, autoCreateTable,
                                   enableBackgroundCleanup, cleanupInterval, allowNullValues,
                                   eventListeners, asyncExecutor);
         }
     }
 
-    private PgCacheStore(DataSource dataSource, ObjectMapper objectMapper, String tableName, boolean autoCreateTable,
+    private PgCacheStore(DataSource dataSource, ObjectMapper objectMapper, String tableName, String namespace,
+                         boolean autoCreateTable,
                          boolean enableBackgroundCleanup, Duration cleanupInterval, boolean allowNullValues,
                          List<CacheEventListener> eventListeners, Executor asyncExecutor) {
         this.dataSource = dataSource;
@@ -620,6 +662,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             }
             this.tableName = trimmed;
         }
+        this.keyPrefix = namespace == null ? "" : namespace + ":";
         this.allowNullValues = allowNullValues;
         this.eventListeners = eventListeners != null ? new ArrayList<>(eventListeners) : new ArrayList<>();
         this.asyncExecutor = asyncExecutor != null ? asyncExecutor : ForkJoinPool.commonPool();
@@ -772,7 +815,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            stmt.setString(1, key);
+            stmt.setString(1, storageKey(key));
             stmt.setBoolean(2, refreshTTL);
 
             try (ResultSet rs = stmt.executeQuery()) {
@@ -803,7 +846,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            stmt.setString(1, key);
+            stmt.setString(1, storageKey(key));
 
             try (ResultSet rs = stmt.executeQuery()) {
                 if (!rs.next()) {
@@ -855,7 +898,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            stmt.setString(1, key);
+            stmt.setString(1, storageKey(key));
 
             try (ResultSet rs = stmt.executeQuery()) {
                 if (!rs.next()) {
@@ -890,7 +933,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
             stmt.setInt(1, ttlSeconds);
-            stmt.setString(2, key);
+            stmt.setString(2, storageKey(key));
 
             int updatedRows = stmt.executeUpdate();
             boolean success = updatedRows > 0;
@@ -960,7 +1003,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
             String jsonValue = objectMapper.writeValueAsString(valueToStore);
 
-            stmt.setString(1, key);
+            stmt.setString(1, storageKey(key));
             stmt.setString(2, jsonValue);
             if (ttlSeconds != null) {
                 stmt.setInt(3, ttlSeconds);
@@ -968,7 +1011,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 stmt.setNull(3, java.sql.Types.INTEGER);
             }
             stmt.setString(4, policy != null ? policy.name() : TTLPolicy.ABSOLUTE.name());
-            stmt.setString(5, key);
+            stmt.setString(5, storageKey(key));
 
             try (ResultSet rs = stmt.executeQuery()) {
                 if (!rs.next()) {
@@ -990,7 +1033,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                     // Re-read on the same connection (new snapshot).
                     try (PreparedStatement reread = conn.prepareStatement(
                             "SELECT value FROM " + tableName + " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE)) {
-                        reread.setString(1, key);
+                        reread.setString(1, storageKey(key));
                         try (ResultSet rrs = reread.executeQuery()) {
                             if (rrs.next()) {
                                 existingJson = rrs.getString(1);
@@ -1120,7 +1163,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     private void acquireKeyLock(Connection conn, String key) throws SQLException {
         try (PreparedStatement stmt = conn.prepareStatement(
                 "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))")) {
-            stmt.setString(1, tableName + ":" + key);
+            stmt.setString(1, tableName + ":" + storageKey(key));
             stmt.executeQuery().close();
         }
     }
@@ -1129,7 +1172,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     private String readLiveValueJson(Connection conn, String key) throws SQLException {
         try (PreparedStatement stmt = conn.prepareStatement(
                 "SELECT value FROM " + tableName + " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE)) {
-            stmt.setString(1, key);
+            stmt.setString(1, storageKey(key));
             try (ResultSet rs = stmt.executeQuery()) {
                 return rs.next() ? rs.getString(1) : null;
             }
@@ -1158,7 +1201,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                      "ttl_seconds = EXCLUDED.ttl_seconds, ttl_policy = EXCLUDED.ttl_policy, " +
                      "last_accessed = EXCLUDED.last_accessed";
         try (PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, key);
+            stmt.setString(1, storageKey(key));
             stmt.setString(2, objectMapper.writeValueAsString(valueToStore));
             if (ttlSeconds != null) {
                 stmt.setInt(3, ttlSeconds);
@@ -1206,7 +1249,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            stmt.setString(1, key);
+            stmt.setString(1, storageKey(key));
             stmt.setLong(2, delta);
             if (ttlSeconds != null) {
                 stmt.setInt(3, ttlSeconds);
@@ -1244,7 +1287,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            stmt.setString(1, key);
+            stmt.setString(1, storageKey(key));
 
             try (ResultSet rs = stmt.executeQuery()) {
                 if (!rs.next()) {
@@ -1305,8 +1348,8 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            stmt.setString(1, key);
-            stmt.setString(2, key);
+            stmt.setString(1, storageKey(key));
+            stmt.setString(2, storageKey(key));
             stmt.setString(3, objectMapper.writeValueAsString(valueToStore));
             if (ttlSeconds != null) {
                 stmt.setInt(4, ttlSeconds);
@@ -1350,7 +1393,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            stmt.setString(1, key);
+            stmt.setString(1, storageKey(key));
             return stmt.executeUpdate() > 0;
         } catch (SQLException e) {
             throw new PgCacheException("Failed to persist key: " + key, e);
@@ -1369,7 +1412,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             String sql = "DELETE FROM " + tableName + " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE;
             try (Connection conn = getValidatedConnection();
                  PreparedStatement stmt = conn.prepareStatement(sql)) {
-                stmt.setString(1, key);
+                stmt.setString(1, storageKey(key));
                 int deleted = stmt.executeUpdate();
                 if (deleted > 0) {
                     evictionCount.incrementAndGet();
@@ -1392,7 +1435,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
             stmt.setTimestamp(1, java.sql.Timestamp.from(deadline));
-            stmt.setString(2, key);
+            stmt.setString(2, storageKey(key));
             return stmt.executeUpdate() > 0;
         } catch (SQLException e) {
             throw new PgCacheException("Failed to expireAt key: " + key, e);
@@ -1412,7 +1455,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            stmt.setString(1, key);
+            stmt.setString(1, storageKey(key));
 
             try (ResultSet rs = stmt.executeQuery()) {
                 if (!rs.next() || !rs.getBoolean("live")) {
@@ -1470,12 +1513,12 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
              PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
 
             for (int i = 0; i < keyList.size(); i++) {
-                stmt.setString(i + 1, keyList.get(i));
+                stmt.setString(i + 1, storageKey(keyList.get(i)));
             }
 
             try (ResultSet rs = stmt.executeQuery()) {
                 while (rs.next()) {
-                    String key = rs.getString("key");
+                    String key = callerKey(rs.getString("key"));
                     String jsonValue = rs.getString("value");
 
                     try {
@@ -1537,7 +1580,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
                 String jsonValue = objectMapper.writeValueAsString(valueToStore);
 
-                stmt.setString(1, key);
+                stmt.setString(1, storageKey(key));
                 stmt.setString(2, jsonValue);
                 stmt.setInt(3, ttlSeconds);
                 stmt.setString(4, policy.name());
@@ -1609,7 +1652,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
                 String jsonValue = objectMapper.writeValueAsString(valueToStore);
 
-                stmt.setString(1, key);
+                stmt.setString(1, storageKey(key));
                 stmt.setString(2, jsonValue);
                 stmt.addBatch();
             }
@@ -1642,7 +1685,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
              PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
 
             for (int i = 0; i < keyList.size(); i++) {
-                stmt.setString(i + 1, keyList.get(i));
+                stmt.setString(i + 1, storageKey(keyList.get(i)));
             }
 
             int deleted = stmt.executeUpdate();
@@ -1670,7 +1713,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            stmt.setString(1, pattern);
+            stmt.setString(1, scopedPattern(pattern));
             int deleted = stmt.executeUpdate();
 
             if (deleted > 0) {
@@ -1722,11 +1765,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
-            stmt.setString(1, pattern);
+            stmt.setString(1, scopedPattern(pattern));
 
             try (ResultSet rs = stmt.executeQuery()) {
                 while (rs.next()) {
-                    keys.add(rs.getString("key"));
+                    keys.add(callerKey(rs.getString("key")));
                 }
             }
             return keys;
@@ -1786,7 +1829,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             if (!hasNext()) {
                 throw new java.util.NoSuchElementException();
             }
-            return batch.get(index++);
+            return callerKey(batch.get(index++));
         }
 
         private void fetchNextBatch() {
@@ -1801,7 +1844,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                  PreparedStatement stmt = conn.prepareStatement(sql)) {
 
                 int p = 1;
-                stmt.setString(p++, pattern);
+                stmt.setString(p++, scopedPattern(pattern));
                 if (cursor != null) {
                     stmt.setString(p++, cursor);
                 }
@@ -1884,6 +1927,23 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         if (key == null || key.isEmpty()) {
             throw new PgCacheException("Cache key cannot be null or empty");
         }
+    }
+
+    // ==================== Namespace scoping (v1.9.0) ====================
+
+    /** Maps a caller key to its storage key by applying the namespace prefix. */
+    private String storageKey(String key) {
+        return keyPrefix.isEmpty() ? key : keyPrefix + key;
+    }
+
+    /** Maps a storage key read from the table back to the caller-visible key. */
+    private String callerKey(String storageKey) {
+        return keyPrefix.isEmpty() ? storageKey : storageKey.substring(keyPrefix.length());
+    }
+
+    /** Scopes a caller LIKE pattern to the namespace (prefix LIKE-escaped). */
+    private String scopedPattern(String pattern) {
+        return keyPrefix.isEmpty() ? pattern : SqlPatterns.escapeLikePattern(keyPrefix) + pattern;
     }
 
     private Object normalizeValue(Object value) {
