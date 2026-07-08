@@ -1117,6 +1117,267 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
     }
 
+    // ==================== Atomic Operations (v1.9.0) ====================
+
+    @Override
+    public long increment(String key, long delta, Duration ttl) {
+        Integer ttlSeconds = ttl != null ? normalizeTtlSeconds(ttl) : null;
+        return doIncrement(key, delta, ttlSeconds);
+    }
+
+    @Override
+    public long increment(String key, long delta) {
+        return doIncrement(key, delta, null);
+    }
+
+    /**
+     * Single-statement atomic counter. A missing or expired row is (re)created
+     * with the delta and the requested TTL; a live row is incremented in place
+     * and keeps its own TTL (Redis INCR semantics).
+     */
+    private long doIncrement(String key, long delta, Integer ttlSeconds) {
+        validateKey(key);
+
+        String live = notExpiredClause("t.");
+        String sql = "INSERT INTO " + tableName + " AS t (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
+                     "VALUES (?, to_jsonb(?::bigint), now(), ?, ?, now()) " +
+                     "ON CONFLICT (key) DO UPDATE SET " +
+                     "value = CASE WHEN " + live + " THEN to_jsonb(((t.value #>> '{}')::bigint) + ?::bigint) ELSE EXCLUDED.value END, " +
+                     "updated_at = CASE WHEN " + live + " THEN t.updated_at ELSE EXCLUDED.updated_at END, " +
+                     "ttl_seconds = CASE WHEN " + live + " THEN t.ttl_seconds ELSE EXCLUDED.ttl_seconds END, " +
+                     "ttl_policy = CASE WHEN " + live + " THEN t.ttl_policy ELSE EXCLUDED.ttl_policy END, " +
+                     "last_accessed = CASE WHEN " + live + " THEN t.last_accessed ELSE EXCLUDED.last_accessed END " +
+                     "RETURNING (value #>> '{}')::bigint AS new_value";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, key);
+            stmt.setLong(2, delta);
+            if (ttlSeconds != null) {
+                stmt.setInt(3, ttlSeconds);
+                stmt.setString(4, TTLPolicy.ABSOLUTE.name());
+            } else {
+                stmt.setNull(3, java.sql.Types.INTEGER);
+                stmt.setNull(4, java.sql.Types.VARCHAR);
+            }
+            stmt.setLong(5, delta);
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (!rs.next()) {
+                    throw new PgCacheException("increment returned no result row for key: " + key);
+                }
+                long newValue = rs.getLong("new_value");
+                putCount.incrementAndGet();
+                invalidateSizeCache();
+                fireOnPut(key, newValue);
+                return newValue;
+            }
+        } catch (SQLException e) {
+            if ("22P02".equals(e.getSQLState())) {
+                throw new PgCacheException("Value at key '" + key + "' is not an integer", e);
+            }
+            throw new PgCacheException("Failed to increment key: " + key, e);
+        }
+    }
+
+    @Override
+    public <T> Optional<T> getAndDelete(String key, Class<T> clazz) {
+        validateKey(key);
+
+        String sql = "DELETE FROM " + tableName + " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE + " RETURNING value";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, key);
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (!rs.next()) {
+                    return Optional.empty();
+                }
+                String json = rs.getString(1);
+                evictionCount.incrementAndGet();
+                invalidateSizeCache();
+                fireOnEvict(key);
+
+                if (allowNullValues) {
+                    Object raw = objectMapper.readValue(json, Object.class);
+                    if (NullValueMarker.isMarker(raw)) {
+                        @SuppressWarnings("unchecked")
+                        T marker = (T) NullValueMarker.getInstance();
+                        return Optional.of(marker);
+                    }
+                }
+                return Optional.of(objectMapper.readValue(json, clazz));
+            }
+        } catch (SQLException | JsonProcessingException e) {
+            throw new PgCacheException("Failed to getAndDelete key: " + key, e);
+        }
+    }
+
+    @Override
+    public <T> Optional<Object> getAndPut(String key, T value, Duration ttl, TTLPolicy policy) {
+        validateKey(key);
+        if (policy == null) {
+            throw new PgCacheException("TTL policy cannot be null");
+        }
+        return doGetAndPut(key, normalizeValue(value), value, normalizeTtlSeconds(ttl), policy);
+    }
+
+    @Override
+    public <T> Optional<Object> getAndPut(String key, T value) {
+        validateKey(key);
+        return doGetAndPut(key, normalizeValue(value), value, null, null);
+    }
+
+    /**
+     * Single-statement UPSERT that returns the previous live value (Redis
+     * GETSET). The CTE and the insert share one snapshot, so the returned
+     * value is exactly what the write replaced; an expired row reports empty.
+     */
+    private Optional<Object> doGetAndPut(String key, Object valueToStore, Object originalValue,
+                                         Integer ttlSeconds, TTLPolicy policy) {
+        String sql = "WITH old AS (" +
+                     "SELECT value FROM " + tableName + " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE +
+                     ") INSERT INTO " + tableName + " (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
+                     "VALUES (?, ?::jsonb, now(), ?, ?, now()) " +
+                     "ON CONFLICT (key) DO UPDATE SET " +
+                     "value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, " +
+                     "ttl_seconds = EXCLUDED.ttl_seconds, ttl_policy = EXCLUDED.ttl_policy, " +
+                     "last_accessed = EXCLUDED.last_accessed " +
+                     "RETURNING (SELECT value FROM old) AS old_value";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, key);
+            stmt.setString(2, key);
+            stmt.setString(3, objectMapper.writeValueAsString(valueToStore));
+            if (ttlSeconds != null) {
+                stmt.setInt(4, ttlSeconds);
+                stmt.setString(5, policy.name());
+            } else {
+                stmt.setNull(4, java.sql.Types.INTEGER);
+                stmt.setNull(5, java.sql.Types.VARCHAR);
+            }
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (!rs.next()) {
+                    throw new PgCacheException("getAndPut returned no result row for key: " + key);
+                }
+                putCount.incrementAndGet();
+                invalidateSizeCache();
+                fireOnPut(key, originalValue);
+
+                String oldJson = rs.getString("old_value");
+                if (oldJson == null) {
+                    return Optional.empty();
+                }
+                Object old = objectMapper.readValue(oldJson, Object.class);
+                if (allowNullValues && NullValueMarker.isMarker(old)) {
+                    return Optional.of(NullValueMarker.getInstance());
+                }
+                return Optional.of(old);
+            }
+        } catch (SQLException | JsonProcessingException e) {
+            throw new PgCacheException("Failed to getAndPut key: " + key, e);
+        }
+    }
+
+    @Override
+    public boolean persist(String key) {
+        validateKey(key);
+
+        // Only rows that actually carry a TTL count as persisted (Redis PERSIST)
+        String sql = "UPDATE " + tableName + " SET ttl_seconds = NULL, ttl_policy = NULL " +
+                     "WHERE key = ? AND ttl_seconds IS NOT NULL AND " + NOT_EXPIRED_WHERE_CLAUSE;
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, key);
+            return stmt.executeUpdate() > 0;
+        } catch (SQLException e) {
+            throw new PgCacheException("Failed to persist key: " + key, e);
+        }
+    }
+
+    @Override
+    public boolean expireAt(String key, Instant deadline) {
+        validateKey(key);
+        if (deadline == null) {
+            throw new PgCacheException("Deadline cannot be null");
+        }
+
+        if (!deadline.isAfter(Instant.now())) {
+            // Redis EXPIREAT with a past timestamp deletes the key
+            String sql = "DELETE FROM " + tableName + " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE;
+            try (Connection conn = getValidatedConnection();
+                 PreparedStatement stmt = conn.prepareStatement(sql)) {
+                stmt.setString(1, key);
+                int deleted = stmt.executeUpdate();
+                if (deleted > 0) {
+                    evictionCount.incrementAndGet();
+                    invalidateSizeCache();
+                    fireOnEvict(key);
+                }
+                return deleted > 0;
+            } catch (SQLException e) {
+                throw new PgCacheException("Failed to expire key: " + key, e);
+            }
+        }
+
+        // TTL is computed against the database clock so a skewed JVM clock
+        // cannot shift the deadline
+        String sql = "UPDATE " + tableName + " SET ttl_policy = 'ABSOLUTE', updated_at = now(), last_accessed = now(), " +
+                     "ttl_seconds = GREATEST(1, CEIL(EXTRACT(EPOCH FROM (?::timestamptz - now()))))::int " +
+                     "WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE;
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setTimestamp(1, java.sql.Timestamp.from(deadline));
+            stmt.setString(2, key);
+            return stmt.executeUpdate() > 0;
+        } catch (SQLException e) {
+            throw new PgCacheException("Failed to expireAt key: " + key, e);
+        }
+    }
+
+    @Override
+    public TtlInfo getTtlInfo(String key) {
+        validateKey(key);
+
+        // remaining is computed database-side: one clock for storage and introspection
+        String sql = "SELECT ttl_seconds IS NULL AS permanent, " + NOT_EXPIRED_WHERE_CLAUSE + " AS live, " +
+                     "EXTRACT(EPOCH FROM ((CASE WHEN ttl_policy = 'SLIDING' THEN COALESCE(last_accessed, updated_at) " +
+                     "ELSE updated_at END + (ttl_seconds * interval '1 second')) - now())) AS remaining_secs " +
+                     "FROM " + tableName + " WHERE key = ?";
+
+        try (Connection conn = getValidatedConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, key);
+
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (!rs.next() || !rs.getBoolean("live")) {
+                    return TtlInfo.missing();
+                }
+                if (rs.getBoolean("permanent")) {
+                    return TtlInfo.permanent();
+                }
+                double remainingSecs = rs.getDouble("remaining_secs");
+                if (remainingSecs <= 0) {
+                    return TtlInfo.missing();
+                }
+                return TtlInfo.expiring(Duration.ofMillis((long) Math.ceil(remainingSecs * 1000)));
+            }
+        } catch (SQLException e) {
+            throw new PgCacheException("Failed to get TTL info for key: " + key, e);
+        }
+    }
+
     // ==================== Batch Operations (v1.3.0) ====================
 
     @Override

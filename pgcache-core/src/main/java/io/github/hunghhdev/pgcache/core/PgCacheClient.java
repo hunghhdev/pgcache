@@ -1,6 +1,7 @@
 package io.github.hunghhdev.pgcache.core;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Optional;
@@ -160,6 +161,102 @@ public interface PgCacheClient {
      * @since 1.9.0
      */
     <T> T getOrCompute(String key, Class<T> clazz, Duration ttl, TTLPolicy policy, Supplier<T> loader);
+
+    // ==================== Atomic Operations (v1.9.0) ====================
+
+    /**
+     * Atomically adds {@code delta} to the numeric value at {@code key} (Redis INCRBY).
+     *
+     * <p>A missing or expired key is created with the value {@code delta} and the
+     * given TTL. A live key is incremented in place and <em>keeps its own TTL</em>
+     * (Redis INCR semantics) — the {@code ttl} argument only applies on creation.</p>
+     *
+     * @param key the cache key
+     * @param delta the amount to add (may be negative)
+     * @param ttl TTL applied when the counter is created, or {@code null} for permanent
+     * @return the counter value after the increment
+     * @throws PgCacheException if the existing value is not an integer
+     * @since 1.9.0
+     */
+    long increment(String key, long delta, Duration ttl);
+
+    /**
+     * Atomically adds {@code delta} to the numeric value at {@code key};
+     * a missing key is created as a permanent entry.
+     *
+     * @since 1.9.0
+     */
+    long increment(String key, long delta);
+
+    /**
+     * Atomically subtracts {@code delta} from the numeric value at {@code key} (Redis DECRBY).
+     *
+     * @since 1.9.0
+     */
+    default long decrement(String key, long delta, Duration ttl) {
+        return increment(key, -delta, ttl);
+    }
+
+    /**
+     * Atomically subtracts {@code delta} from the numeric value at {@code key};
+     * a missing key is created as a permanent entry.
+     *
+     * @since 1.9.0
+     */
+    default long decrement(String key, long delta) {
+        return increment(key, -delta);
+    }
+
+    /**
+     * Atomically reads and removes the value at {@code key} (Redis GETDEL).
+     *
+     * @return the removed value, or empty if the key was absent or expired
+     * @since 1.9.0
+     */
+    <T> Optional<T> getAndDelete(String key, Class<T> clazz);
+
+    /**
+     * Atomically stores the new value and returns the previous live value (Redis GETSET).
+     *
+     * @return the value the write replaced, or empty if the key was absent or expired
+     * @since 1.9.0
+     */
+    <T> Optional<Object> getAndPut(String key, T value, Duration ttl, TTLPolicy policy);
+
+    /**
+     * Atomically stores a permanent value and returns the previous live value.
+     *
+     * @since 1.9.0
+     */
+    <T> Optional<Object> getAndPut(String key, T value);
+
+    /**
+     * Removes the TTL from a live entry, making it permanent (Redis PERSIST).
+     *
+     * @return true if a TTL was removed; false if the key is absent, expired or already permanent
+     * @since 1.9.0
+     */
+    boolean persist(String key);
+
+    /**
+     * Sets an absolute expiration deadline on a live entry (Redis EXPIREAT).
+     * A deadline in the past deletes the entry. The remaining TTL is computed
+     * against the database clock.
+     *
+     * @return true if the deadline was applied (or the entry deleted); false if the key is absent or expired
+     * @since 1.9.0
+     */
+    boolean expireAt(String key, Instant deadline);
+
+    /**
+     * TTL introspection distinguishing missing, permanent and expiring entries —
+     * unlike {@link #getRemainingTTL(String)}, which reports empty for both a
+     * missing key and a permanent one.
+     *
+     * @return never null; state MISSING, PERMANENT, or EXPIRING with the remaining duration
+     * @since 1.9.0
+     */
+    TtlInfo getTtlInfo(String key);
 
     // ==================== Batch Operations (v1.3.0) ====================
 
