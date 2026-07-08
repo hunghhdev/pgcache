@@ -10,12 +10,23 @@ public class CacheStatistics {
     private final long missCount;
     private final long putCount;
     private final long evictionCount;
+    private final long expiredCount;
 
     public CacheStatistics(long hitCount, long missCount, long putCount, long evictionCount) {
+        this(hitCount, missCount, putCount, evictionCount, 0);
+    }
+
+    /**
+     * @param expiredCount entries removed because their TTL elapsed, counted
+     *     separately from explicit evictions (Redis expired_keys vs evicted_keys)
+     * @since 1.9.0
+     */
+    public CacheStatistics(long hitCount, long missCount, long putCount, long evictionCount, long expiredCount) {
         this.hitCount = hitCount;
         this.missCount = missCount;
         this.putCount = putCount;
         this.evictionCount = evictionCount;
+        this.expiredCount = expiredCount;
     }
 
     /**
@@ -47,6 +58,15 @@ public class CacheStatistics {
     }
 
     /**
+     * Returns the number of entries removed because their TTL elapsed.
+     *
+     * @since 1.9.0
+     */
+    public long getExpiredCount() {
+        return expiredCount;
+    }
+
+    /**
      * Returns the total number of requests (hits + misses).
      */
     public long getRequestCount() {
@@ -74,8 +94,8 @@ public class CacheStatistics {
     @Override
     public String toString() {
         return String.format(
-            "CacheStatistics{hits=%d, misses=%d, hitRate=%.2f%%, puts=%d, evictions=%d}",
-            hitCount, missCount, getHitRate() * 100, putCount, evictionCount
+            "CacheStatistics{hits=%d, misses=%d, hitRate=%.2f%%, puts=%d, evictions=%d, expired=%d}",
+            hitCount, missCount, getHitRate() * 100, putCount, evictionCount, expiredCount
         );
     }
 }

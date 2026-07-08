@@ -42,7 +42,7 @@ class PgCacheTest {
     void getWithNullType_doesNotThrowAndReturnsNull() {
         PgCache cache = new PgCache("test", cacheStore, Duration.ofMinutes(5), true, TTLPolicy.ABSOLUTE);
 
-        when(cacheStore.get(eq("test:key1"), isNull(), eq(true)))
+        when(cacheStore.get(eq("test:key1"), org.mockito.ArgumentMatchers.<Class<Object>>isNull(), eq(true)))
                 .thenThrow(new IllegalArgumentException("type cannot be null"));
 
         assertDoesNotThrow(() -> assertNull(cache.get("key1", (Class<Object>) null)));

@@ -106,6 +106,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     private final AtomicLong missCount = new AtomicLong(0);
     private final AtomicLong putCount = new AtomicLong(0);
     private final AtomicLong evictionCount = new AtomicLong(0);
+    private final AtomicLong expiredCount = new AtomicLong(0);
 
     // Cache for size() method to avoid expensive full table scans
     private final AtomicReference<SizeSnapshot> sizeCache = new AtomicReference<>();
@@ -300,11 +301,11 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 stmt.setString(1, scopedPattern("%"));
             }
             int deleted = stmt.executeUpdate();
+            invalidateSizeCache();
             if (deleted > 0) {
                 evictionCount.addAndGet(deleted);
+                fireOnClear();
             }
-            invalidateSizeCache();
-            fireOnClear();
         } catch (SQLException e) {
             throw new PgCacheException("Failed to clear cache", e);
         }
@@ -458,7 +459,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
 
         if (total > 0) {
-            evictionCount.addAndGet(total);
+            expiredCount.addAndGet(total);
             logger.info("Cleaned up {} expired cache entries", total);
             invalidateSizeCache(); // Invalidate size cache if entries were removed
         } else {
@@ -829,6 +830,8 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 return Optional.of(result);
 
             } catch (JsonProcessingException e) {
+                // the entry exists but is unusable for the caller — that is a miss
+                missCount.incrementAndGet();
                 throw new PgCacheException("Failed to deserialize cached value", e);
             }
         } catch (SQLException e) {
@@ -1568,6 +1571,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
+            List<Map.Entry<String, T>> written = new ArrayList<>(entries.size());
             for (Map.Entry<String, T> entry : entries.entrySet()) {
                 String key = entry.getKey();
                 Object value = entry.getValue();
@@ -1576,6 +1580,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                     continue;
                 }
 
+                written.add(entry);
                 Object valueToStore = normalizeValue(value);
 
                 String jsonValue = objectMapper.writeValueAsString(valueToStore);
@@ -1587,9 +1592,12 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 stmt.addBatch();
             }
 
-            int[] results = executeBatchAtomically(conn, stmt);
-            putCount.addAndGet(results.length);
+            executeBatchAtomically(conn, stmt);
+            putCount.addAndGet(written.size());
             invalidateSizeCache();
+            for (Map.Entry<String, T> entry : written) {
+                fireOnPut(entry.getKey(), entry.getValue());
+            }
 
         } catch (SQLException | JsonProcessingException e) {
             throw new PgCacheException("Failed to put multiple values in cache", e);
@@ -1640,6 +1648,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
+            List<Map.Entry<String, T>> written = new ArrayList<>(entries.size());
             for (Map.Entry<String, T> entry : entries.entrySet()) {
                 String key = entry.getKey();
                 Object value = entry.getValue();
@@ -1648,6 +1657,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                     continue;
                 }
 
+                written.add(entry);
                 Object valueToStore = normalizeValue(value);
 
                 String jsonValue = objectMapper.writeValueAsString(valueToStore);
@@ -1657,9 +1667,12 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 stmt.addBatch();
             }
 
-            int[] results = executeBatchAtomically(conn, stmt);
-            putCount.addAndGet(results.length);
+            executeBatchAtomically(conn, stmt);
+            putCount.addAndGet(written.size());
             invalidateSizeCache();
+            for (Map.Entry<String, T> entry : written) {
+                fireOnPut(entry.getKey(), entry.getValue());
+            }
 
         } catch (SQLException | JsonProcessingException e) {
             throw new PgCacheException("Failed to put multiple values in cache", e);
@@ -1679,7 +1692,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         for (int i = 0; i < keyList.size(); i++) {
             sql.append(i > 0 ? ", ?" : "?");
         }
-        sql.append(")");
+        sql.append(") RETURNING key");
 
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
@@ -1688,12 +1701,20 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 stmt.setString(i + 1, storageKey(keyList.get(i)));
             }
 
-            int deleted = stmt.executeUpdate();
-            if (deleted > 0) {
-                evictionCount.addAndGet(deleted);
-                invalidateSizeCache();
+            List<String> deletedKeys = new ArrayList<>();
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    deletedKeys.add(callerKey(rs.getString(1)));
+                }
             }
-            return deleted;
+            if (!deletedKeys.isEmpty()) {
+                evictionCount.addAndGet(deletedKeys.size());
+                invalidateSizeCache();
+                for (String deletedKey : deletedKeys) {
+                    fireOnEvict(deletedKey);
+                }
+            }
+            return deletedKeys.size();
 
         } catch (SQLException e) {
             throw new PgCacheException("Failed to evict multiple keys from cache", e);
@@ -1708,21 +1729,30 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             throw new PgCacheException("Pattern cannot be null or empty");
         }
 
-        String sql = "DELETE FROM " + tableName + " WHERE key LIKE ? ESCAPE '\\'";
+        String sql = "DELETE FROM " + tableName + " WHERE key LIKE ? ESCAPE '\\' RETURNING key";
 
         try (Connection conn = getValidatedConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
             stmt.setString(1, scopedPattern(pattern));
-            int deleted = stmt.executeUpdate();
 
-            if (deleted > 0) {
-                evictionCount.addAndGet(deleted);
-                invalidateSizeCache();
-                logger.debug("Evicted {} entries matching pattern '{}'", deleted, pattern);
+            List<String> deletedKeys = new ArrayList<>();
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    deletedKeys.add(callerKey(rs.getString(1)));
+                }
             }
 
-            return deleted;
+            if (!deletedKeys.isEmpty()) {
+                evictionCount.addAndGet(deletedKeys.size());
+                invalidateSizeCache();
+                for (String deletedKey : deletedKeys) {
+                    fireOnEvict(deletedKey);
+                }
+                logger.debug("Evicted {} entries matching pattern '{}'", deletedKeys.size(), pattern);
+            }
+
+            return deletedKeys.size();
 
         } catch (SQLException e) {
             throw new PgCacheException("Failed to evict entries by pattern: " + pattern, e);
@@ -1737,7 +1767,8 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             hitCount.get(),
             missCount.get(),
             putCount.get(),
-            evictionCount.get()
+            evictionCount.get(),
+            expiredCount.get()
         );
     }
 
@@ -1747,6 +1778,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         missCount.set(0);
         putCount.set(0);
         evictionCount.set(0);
+        expiredCount.set(0);
         logger.debug("Cache statistics reset");
     }
 

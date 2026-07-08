@@ -314,13 +314,14 @@ class PgCacheStoreTest {
         cacheStore.clear();
 
         // Verify
-        verify(statement).executeUpdate(contains("DELETE FROM pgcache_store"));
+        verify(connection).prepareStatement(contains("DELETE FROM pgcache_store"));
+        verify(preparedStatement).executeUpdate();
     }
 
     @Test
     void testSize() throws Exception {
         // Arrange
-        when(statement.executeQuery(anyString())).thenReturn(resultSet);
+        when(preparedStatement.executeQuery()).thenReturn(resultSet);
         when(resultSet.next()).thenReturn(true);
         when(resultSet.getInt(1)).thenReturn(42);
 
@@ -331,8 +332,8 @@ class PgCacheStoreTest {
         assertEquals(42, size);
 
         // Verify
-        verify(statement).executeQuery(contains("COUNT(*)"));
-        verify(statement).executeQuery(contains("ttl_seconds * interval '1 second'"));
+        verify(connection).prepareStatement(contains("COUNT(*)"));
+        verify(connection).prepareStatement(contains("ttl_seconds * interval '1 second'"));
     }
 
     // Test object class for serialization/deserialization

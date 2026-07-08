@@ -314,7 +314,7 @@ class PgCacheStoreTTLCleanupTest {
     }
 
     @Test
-    void testCleanupExpiredUpdatesEvictionStatistics() {
+    void testCleanupExpiredUpdatesExpiredStatistics() {
         cache.put("expired1", "value1", Duration.ofSeconds(1));
         cache.put("expired2", "value2", Duration.ofSeconds(1));
         cache.put("permanent", "value3");
@@ -330,7 +330,8 @@ class PgCacheStoreTTLCleanupTest {
         CacheStatistics statistics = cache.getStatistics();
 
         assertEquals(2, cleanedUp);
-        assertEquals(2, statistics.getEvictionCount(), "cleanupExpired should contribute to eviction statistics");
+        assertEquals(2, statistics.getExpiredCount(), "cleanupExpired should contribute to expired statistics");
+        assertEquals(0, statistics.getEvictionCount(), "expiry is not an explicit eviction (Redis semantics)");
     }
 
     private void insertLegacySlidingRowWithNullLastAccessed(String key, String value, int ttlSeconds) throws Exception {

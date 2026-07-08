@@ -107,11 +107,22 @@ public class PgCache implements Cache {
             }
             return value;
         } catch (Exception e) {
+            if (isTypeMismatch(e)) {
+                // Spring Cache contract: a found value of the wrong type is a
+                // programming error, not a miss to swallow
+                throw new IllegalStateException("Cached value for key '" + key + "' in cache '" + name +
+                        "' is not of required type " + safeTypeName(type), e);
+            }
             cacheMisses.incrementAndGet();
             logger.warn("Failed to get value from cache '{}' for key '{}' with type {}: {}",
                        name, key, safeTypeName(type), e.getMessage());
             return null;
         }
+    }
+
+    /** True when the failure is Jackson refusing to map the cached JSON to the requested type. */
+    private static boolean isTypeMismatch(Exception e) {
+        return e.getCause() instanceof com.fasterxml.jackson.databind.exc.MismatchedInputException;
     }
     
     @Override

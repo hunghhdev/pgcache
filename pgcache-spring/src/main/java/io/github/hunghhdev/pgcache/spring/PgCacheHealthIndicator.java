@@ -58,6 +58,7 @@ public class PgCacheHealthIndicator implements HealthIndicator {
                 details.put(prefix + "hitRate", String.format("%.2f%%", stats.getHitRate() * 100));
                 details.put(prefix + "puts", stats.getPutCount());
                 details.put(prefix + "evictions", stats.getEvictionCount());
+                details.put(prefix + "expired", stats.getExpiredCount());
             });
 
             return builder.withDetails(details).build();
