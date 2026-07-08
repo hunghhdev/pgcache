@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-07-08
+
+Redis-parity release: the operations Redis users expect, plus cache-stampede protection Redis itself does not have.
+
+### New Features
+
+- **`getOrCompute(key, type, ttl, [policy,] loader)` with single-flight loading**: on a miss, a PostgreSQL transaction-scoped advisory lock guarantees exactly one caller — across threads *and JVMs* — runs the loader; everyone else waits and reads the stored result. Loader failures propagate and cache nothing; if the database is down, reads fail open to a direct load. Spring's `@Cacheable(sync=true)` / `Cache.get(key, valueLoader)` now routes through this, fixing the cache-stampede window.
+- **Atomic counters**: `increment` / `decrement` (Redis INCRBY/DECRBY) — single-statement UPSERT, no lost updates under concurrency. Live counters keep their TTL; expired ones restart from the delta.
+- **`getAndDelete`** (Redis GETDEL) and **`getAndPut`** (Redis GETSET) — single-statement read-and-write.
+- **`persist(key)`** (Redis PERSIST) and **`expireAt(key, deadline)`** (Redis EXPIREAT, past deadline deletes) — TTL computed against the database clock.
+- **`getTtlInfo(key)`** — distinguishes MISSING / PERMANENT / EXPIRING-with-remaining, which `getRemainingTTL` could not.
+- **Typed generic reads**: `get(key, TypeReference)` and `getAll(keys, TypeReference)` — `List<User>` comes back as `List<User>`, not `List<LinkedHashMap>`.
+- **`scanKeys(pattern, batchSize)`** — lazy keyset-paginated key iteration with constant memory (replaces materializing `getKeys` on large key sets).
+- **Namespaces**: `builder().namespace("tenant_a")` transparently prefixes keys and scopes `clear`/`size`/`getKeys`/`scanKeys`/`evictByPattern`; multiple namespaced stores safely share one table.
+- `cleanupExpired(batchSize)` — expired rows are now deleted in LIMIT-ed batches (default 10 000) in short transactions instead of one unbounded DELETE.
+- `CacheStatistics.getExpiredCount()` — TTL expiry is counted separately from explicit evictions (Redis `expired_keys` vs `evicted_keys`).
+
+### Behavior Changes
+
+- Cache event listeners now fire for every operation: `putAll` fires `onPut` per entry, `evictAll`/`evictByPattern` fire `onEvict` per actually-deleted key, and `onClear` fires only when `clear()` removed at least one row.
+- `cleanupExpired` no longer inflates `evictionCount`; expired removals are reported in the new `expiredCount`.
+- A cached value that fails deserialization now counts as a miss in statistics (the exception is still thrown).
+- Spring `Cache.get(key, type)` throws `IllegalStateException` on a type mismatch, as the Spring Cache contract requires (was: silently returned `null`). Infrastructure failures still degrade to a miss.
+
 ## [1.8.0] - 2026-07-08
 
 ### New Features

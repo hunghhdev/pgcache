@@ -38,6 +38,11 @@ Perfect for small-to-medium applications that want caching without the complexit
 - **Zero extra infrastructure** - Uses your existing PostgreSQL
 - **Spring Boot integration** - Works with `@Cacheable`, `@CacheEvict`, auto-configuration
 - **Quarkus integration** - Works with `@CacheResult`, MicroProfile Health
+- **Cache-stampede protection (v1.9.0)** - `getOrCompute` loads each missing key exactly once across threads *and JVMs* (PostgreSQL advisory locks — something plain Redis cannot do)
+- **Atomic operations (v1.9.0)** - `increment`/`decrement`, `getAndDelete`, `getAndPut`, `persist`, `expireAt` (Redis INCR/GETDEL/GETSET/PERSIST/EXPIREAT parity)
+- **Typed generic reads (v1.9.0)** - `get(key, new TypeReference<List<User>>() {})`
+- **Key scanning (v1.9.0)** - `scanKeys(pattern, batchSize)` streams keys with constant memory
+- **Namespaces (v1.9.0)** - isolated logical caches sharing one table
 - **Async API** - Non-blocking operations (`getAsync`, `putAsync`)
 - **Event Listeners** - Monitor cache events (put, evict, clear)
 - **Sliding TTL** - Active entries stay cached longer (like Redis)
@@ -229,6 +234,58 @@ public class CacheHealthCheck implements HealthCheck {
 ```
 
 ## Advanced Features
+
+### Read-through with stampede protection (v1.9.0)
+
+```java
+// On a miss, exactly ONE caller (across threads and JVMs) runs the loader;
+// concurrent callers wait on a PostgreSQL advisory lock and read the stored result.
+User user = cache.getOrCompute("user:42", User.class, Duration.ofMinutes(10),
+    () -> userRepository.findById(42));
+```
+
+Spring's `@Cacheable(sync = true)` routes through this automatically.
+
+### Atomic operations (v1.9.0)
+
+```java
+long views = cache.increment("views:page:1", 1);            // Redis INCR
+long stock = cache.decrement("stock:sku-9", 3);             // Redis DECRBY
+Optional<Token> old = cache.getAndDelete("token:abc", Token.class);  // Redis GETDEL
+Optional<Object> prev = cache.getAndPut("config", newCfg, ttl, TTLPolicy.ABSOLUTE); // GETSET
+cache.persist("session:1");                                 // Redis PERSIST (drop TTL)
+cache.expireAt("report:daily", tomorrowMidnight);           // Redis EXPIREAT
+
+TtlInfo info = cache.getTtlInfo("session:1");               // MISSING / PERMANENT / EXPIRING
+```
+
+### Typed generic reads (v1.9.0)
+
+```java
+Optional<List<User>> users = cache.get("team:all", new TypeReference<List<User>>() {});
+```
+
+### Key scanning (v1.9.0)
+
+```java
+// Streams keys in batches of 500 — constant memory even with millions of keys
+for (String key : cache.scanKeys("user:%", 500)) {
+    process(key);
+}
+```
+
+### Namespaces (v1.9.0)
+
+```java
+PgCacheStore tenantA = PgCacheStore.builder()
+    .dataSource(ds).namespace("tenant_a").build();
+PgCacheStore tenantB = PgCacheStore.builder()
+    .dataSource(ds).namespace("tenant_b").build();
+
+// Same table, fully isolated: clear(), size(), getKeys(), scanKeys()
+// only see the store's own namespace
+tenantA.clear(); // tenant_b entries untouched
+```
 
 ### Batch Operations (v1.3.0)
 
