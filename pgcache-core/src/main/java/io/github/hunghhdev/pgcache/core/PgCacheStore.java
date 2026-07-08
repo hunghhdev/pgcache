@@ -22,6 +22,7 @@ import java.util.function.Supplier;
 import javax.sql.DataSource;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -390,37 +391,65 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
         }
     }
 
+    /** Rows removed per DELETE by {@link #cleanupExpired()}. */
+    static final int DEFAULT_CLEANUP_BATCH_SIZE = 10_000;
+
     /**
-     * Removes all expired entries from the cache.
-     * This method performs a batch cleanup of all entries that have exceeded their TTL.
+     * Removes all expired entries from the cache in batches of
+     * {@value #DEFAULT_CLEANUP_BATCH_SIZE} rows.
      * Entries with NULL TTL (permanent entries) are not affected.
-     * 
+     *
      * For ABSOLUTE TTL: Expiration is based on updated_at + ttl_seconds
      * For SLIDING TTL: Expiration is based on last_accessed + ttl_seconds
-     * 
+     *
      * @return the number of expired entries that were removed
      */
     public int cleanupExpired() {
-        String sql = "DELETE FROM " + tableName + " WHERE " + EXPIRED_WHERE_CLAUSE;
+        return cleanupExpired(DEFAULT_CLEANUP_BATCH_SIZE);
+    }
 
-        try (Connection conn = getValidatedConnection();
-             Statement stmt = conn.createStatement()) {
+    /**
+     * Removes all expired entries in LIMIT-ed batches. Each batch is its own
+     * short transaction, so a huge backlog of expired rows never holds locks
+     * (or vacuum) hostage the way one giant DELETE would.
+     *
+     * @param batchSize rows removed per DELETE statement, must be positive
+     * @return the total number of expired entries that were removed
+     * @since 1.9.0
+     */
+    public int cleanupExpired(int batchSize) {
+        if (batchSize <= 0) {
+            throw new PgCacheException("batchSize must be positive, got: " + batchSize);
+        }
 
-            int deletedCount = stmt.executeUpdate(sql);
-            
-            if (deletedCount > 0) {
-                evictionCount.addAndGet(deletedCount);
-                logger.info("Cleaned up {} expired cache entries", deletedCount);
-                invalidateSizeCache(); // Invalidate size cache if entries were removed
-            } else {
-                logger.debug("No expired cache entries found during cleanup");
-            }
-            
-            return deletedCount;
+        String sql = "DELETE FROM " + tableName + " WHERE ctid IN (" +
+                     "SELECT ctid FROM " + tableName + " WHERE " + EXPIRED_WHERE_CLAUSE + " LIMIT ?)";
+
+        int total = 0;
+        int deleted;
+        try {
+            do {
+                try (Connection conn = getValidatedConnection();
+                     PreparedStatement stmt = conn.prepareStatement(sql)) {
+                    stmt.setInt(1, batchSize);
+                    deleted = stmt.executeUpdate();
+                }
+                total += deleted;
+            } while (deleted == batchSize);
         } catch (SQLException e) {
             logger.error("Failed to cleanup expired cache entries", e);
             throw new PgCacheException("Failed to cleanup expired cache entries", e);
         }
+
+        if (total > 0) {
+            evictionCount.addAndGet(total);
+            logger.info("Cleaned up {} expired cache entries", total);
+            invalidateSizeCache(); // Invalidate size cache if entries were removed
+        } else {
+            logger.debug("No expired cache entries found during cleanup");
+        }
+
+        return total;
     }
 
 
@@ -686,6 +715,45 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     @Override
     public <T> Optional<T> get(String key, Class<T> clazz, boolean refreshTTL) {
+        return doGet(key, refreshTTL, json -> readMarkerAware(json, j -> objectMapper.readValue(j, clazz)));
+    }
+
+    @Override
+    public <T> Optional<T> get(String key, TypeReference<T> typeRef) {
+        return get(key, typeRef, true);
+    }
+
+    @Override
+    public <T> Optional<T> get(String key, TypeReference<T> typeRef, boolean refreshTTL) {
+        if (typeRef == null) {
+            throw new PgCacheException("TypeReference cannot be null");
+        }
+        return doGet(key, refreshTTL, json -> readMarkerAware(json, j -> objectMapper.readValue(j, typeRef)));
+    }
+
+    /** Deserializes one cached JSON document; may throw on malformed or mismatched content. */
+    @FunctionalInterface
+    private interface JsonReader<T> {
+        T read(String json) throws JsonProcessingException;
+    }
+
+    /**
+     * Wraps a typed reader with the stored-null protocol: a null-marker
+     * document short-circuits to the marker instance instead of the requested type.
+     */
+    private <T> T readMarkerAware(String json, JsonReader<T> reader) throws JsonProcessingException {
+        if (allowNullValues) {
+            Object raw = objectMapper.readValue(json, Object.class);
+            if (NullValueMarker.isMarker(raw)) {
+                @SuppressWarnings("unchecked")
+                T marker = (T) NullValueMarker.getInstance();
+                return marker;
+            }
+        }
+        return reader.read(json);
+    }
+
+    private <T> Optional<T> doGet(String key, boolean refreshTTL, JsonReader<T> reader) {
         validateKey(key);
 
         // Single statement: read the live row and, in the same snapshot, slide
@@ -713,21 +781,7 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                     return Optional.empty();
                 }
 
-                String jsonValue = rs.getString("value");
-
-                // Check if this is a null marker
-                if (allowNullValues) {
-                    Object rawResult = objectMapper.readValue(jsonValue, Object.class);
-                    if (NullValueMarker.isMarker(rawResult)) {
-                        @SuppressWarnings("unchecked")
-                        T marker = (T) NullValueMarker.getInstance();
-                        hitCount.incrementAndGet();
-                        return Optional.of(marker);
-                    }
-                }
-
-                // Normal deserialization with the requested type
-                T result = objectMapper.readValue(jsonValue, clazz);
+                T result = reader.read(rs.getString("value"));
                 hitCount.incrementAndGet();
                 return Optional.of(result);
 
@@ -1382,6 +1436,18 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
     @Override
     public <T> Map<String, T> getAll(Collection<String> keys, Class<T> clazz) {
+        return doGetAll(keys, json -> readMarkerAware(json, j -> objectMapper.readValue(j, clazz)));
+    }
+
+    @Override
+    public <T> Map<String, T> getAll(Collection<String> keys, TypeReference<T> typeRef) {
+        if (typeRef == null) {
+            throw new PgCacheException("TypeReference cannot be null");
+        }
+        return doGetAll(keys, json -> readMarkerAware(json, j -> objectMapper.readValue(j, typeRef)));
+    }
+
+    private <T> Map<String, T> doGetAll(Collection<String> keys, JsonReader<T> reader) {
         if (keys == null || keys.isEmpty()) {
             return new HashMap<>();
         }
@@ -1412,20 +1478,8 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                     String key = rs.getString("key");
                     String jsonValue = rs.getString("value");
 
-                    // Deserialize value
                     try {
-                        Object rawResult = objectMapper.readValue(jsonValue, Object.class);
-
-                        // Handle null marker
-                        if (allowNullValues && NullValueMarker.isMarker(rawResult)) {
-                            @SuppressWarnings("unchecked")
-                            T marker = (T) NullValueMarker.getInstance();
-                            results.put(key, marker);
-                            continue;
-                        }
-
-                        T value = objectMapper.readValue(jsonValue, clazz);
-                        results.put(key, value);
+                        results.put(key, reader.read(jsonValue));
                     } catch (JsonProcessingException e) {
                         logger.warn("Failed to deserialize value for key '{}': {}", key, e.getMessage());
                     }
@@ -1684,6 +1738,93 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
     @Override
     public Collection<String> getAllKeys() {
         return getKeys("%");
+    }
+
+    @Override
+    public Iterable<String> scanKeys(String pattern, int batchSize) {
+        if (pattern == null || pattern.isEmpty()) {
+            throw new PgCacheException("Pattern cannot be null or empty");
+        }
+        if (batchSize <= 0) {
+            throw new PgCacheException("batchSize must be positive, got: " + batchSize);
+        }
+        return () -> new ScanKeysIterator(pattern, batchSize);
+    }
+
+    /**
+     * Keyset-paginated key iterator: each batch is one query bounded by the
+     * last key of the previous batch, so memory stays constant regardless of
+     * how many keys match. Weakly consistent across batches by design.
+     */
+    private final class ScanKeysIterator implements java.util.Iterator<String> {
+        private final String pattern;
+        private final int batchSize;
+        private List<String> batch = new ArrayList<>();
+        private int index = 0;
+        private String cursor;
+        private boolean exhausted;
+
+        ScanKeysIterator(String pattern, int batchSize) {
+            this.pattern = pattern;
+            this.batchSize = batchSize;
+        }
+
+        @Override
+        public boolean hasNext() {
+            if (index < batch.size()) {
+                return true;
+            }
+            if (exhausted) {
+                return false;
+            }
+            fetchNextBatch();
+            return index < batch.size();
+        }
+
+        @Override
+        public String next() {
+            if (!hasNext()) {
+                throw new java.util.NoSuchElementException();
+            }
+            return batch.get(index++);
+        }
+
+        private void fetchNextBatch() {
+            String sql = "SELECT key FROM " + tableName +
+                         " WHERE key LIKE ? ESCAPE '\\'" +
+                         (cursor != null ? " AND key > ?" : "") +
+                         " AND " + NOT_EXPIRED_WHERE_CLAUSE +
+                         " ORDER BY key LIMIT ?";
+
+            List<String> next = new ArrayList<>(batchSize);
+            try (Connection conn = getValidatedConnection();
+                 PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+                int p = 1;
+                stmt.setString(p++, pattern);
+                if (cursor != null) {
+                    stmt.setString(p++, cursor);
+                }
+                stmt.setInt(p, batchSize);
+
+                try (ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) {
+                        next.add(rs.getString(1));
+                    }
+                }
+            } catch (SQLException e) {
+                throw new PgCacheException("Failed to scan keys by pattern: " + pattern, e);
+            }
+
+            batch = next;
+            index = 0;
+            if (!next.isEmpty()) {
+                cursor = next.get(next.size() - 1);
+            }
+            if (next.size() < batchSize) {
+                exhausted = true;
+            }
+        }
     }
 
     // ==================== Async Operations (v1.6.0) ====================

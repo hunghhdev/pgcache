@@ -1,5 +1,7 @@
 package io.github.hunghhdev.pgcache.core;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
@@ -125,6 +127,51 @@ public interface PgCacheClient {
      * @since 1.6.0
      */
     boolean containsKey(String key);
+
+    // ==================== Generic reads (v1.9.0) ====================
+
+    /**
+     * Gets a value deserialized through a Jackson {@link TypeReference}, so
+     * parameterized types come back properly typed — e.g.
+     * {@code get("users", new TypeReference<List<User>>() {})} returns a
+     * {@code List<User>}, not a {@code List<LinkedHashMap>}.
+     *
+     * @since 1.9.0
+     */
+    <T> Optional<T> get(String key, TypeReference<T> typeRef);
+
+    /**
+     * Variant of {@link #get(String, TypeReference)} with control over TTL refresh
+     * for SLIDING entries.
+     *
+     * @since 1.9.0
+     */
+    <T> Optional<T> get(String key, TypeReference<T> typeRef, boolean refreshTTL);
+
+    /**
+     * Batch variant of {@link #get(String, TypeReference)}. Like
+     * {@link #getAll(Collection, Class)}, this does not refresh sliding TTLs.
+     *
+     * @since 1.9.0
+     */
+    <T> Map<String, T> getAll(Collection<String> keys, TypeReference<T> typeRef);
+
+    // ==================== Key iteration (v1.9.0) ====================
+
+    /**
+     * Lazily iterates non-expired keys matching the SQL LIKE pattern using
+     * keyset pagination — constant memory regardless of match count, unlike
+     * {@link #getKeys(String)} which materializes everything.
+     *
+     * <p>Each batch runs as its own query, so the iteration is weakly
+     * consistent: keys written or expired mid-scan may or may not appear.
+     * Iterators are not thread-safe; obtain one per thread.</p>
+     *
+     * @param pattern SQL LIKE pattern (use {@code %} for any chars)
+     * @param batchSize keys fetched per round-trip, must be positive
+     * @since 1.9.0
+     */
+    Iterable<String> scanKeys(String pattern, int batchSize);
 
     // ==================== Read-through with single-flight (v1.9.0) ====================
 
