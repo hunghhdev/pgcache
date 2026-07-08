@@ -18,6 +18,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import javax.sql.DataSource;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -961,6 +962,158 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
             }
         } catch (SQLException | JsonProcessingException e) {
             throw new PgCacheException("Failed to putIfAbsent value in cache", e);
+        }
+    }
+
+    // ==================== Read-through with single-flight (v1.9.0) ====================
+
+    @Override
+    public <T> T getOrCompute(String key, Class<T> clazz, Duration ttl, Supplier<T> loader) {
+        return getOrCompute(key, clazz, ttl, TTLPolicy.ABSOLUTE, loader);
+    }
+
+    @Override
+    public <T> T getOrCompute(String key, Class<T> clazz, Duration ttl, TTLPolicy policy, Supplier<T> loader) {
+        validateKey(key);
+        if (loader == null) {
+            throw new PgCacheException("Loader cannot be null");
+        }
+        if (policy == null) {
+            throw new PgCacheException("TTL policy cannot be null");
+        }
+        Integer ttlSeconds = ttl != null ? normalizeTtlSeconds(ttl) : null;
+
+        // Fast path: no lock while the value is warm
+        try {
+            Optional<T> cached = get(key, clazz);
+            if (cached.isPresent()) {
+                T value = cached.get();
+                return value instanceof NullValueMarker ? null : value;
+            }
+        } catch (PgCacheException e) {
+            logger.warn("getOrCompute read failed for key '{}', falling back to direct load: {}", key, e.getMessage());
+            return loader.get();
+        }
+
+        try (Connection conn = getValidatedConnection()) {
+            conn.setAutoCommit(false);
+            boolean committed = false;
+            try {
+                acquireKeyLock(conn, key);
+
+                // Re-check under the lock: a concurrent loader may have stored
+                // the value while we were waiting
+                String existingJson = readLiveValueJson(conn, key);
+                if (existingJson != null) {
+                    try {
+                        T value = deserializeMarkerAware(existingJson, clazz);
+                        conn.commit();
+                        committed = true;
+                        return value;
+                    } catch (JsonProcessingException corrupt) {
+                        // undeserializable row is as good as a miss — recompute and overwrite
+                        logger.warn("getOrCompute found undeserializable value for key '{}', recomputing: {}",
+                                key, corrupt.getMessage());
+                    }
+                }
+
+                T loaded = loader.get();
+
+                if (loaded == null && !allowNullValues) {
+                    return null; // rollback in finally releases the lock; nothing to store
+                }
+
+                // Store failures must not re-run or hide the already computed value
+                try {
+                    writeEntry(conn, key, normalizeValue(loaded), ttlSeconds, policy);
+                    conn.commit();
+                    committed = true;
+                    putCount.incrementAndGet();
+                    invalidateSizeCache();
+                    fireOnPut(key, loaded);
+                } catch (SQLException | JsonProcessingException storeFailure) {
+                    logger.warn("getOrCompute could not store computed value for key '{}', returning it uncached: {}",
+                            key, storeFailure.getMessage());
+                }
+                return loaded;
+            } finally {
+                if (!committed) {
+                    try {
+                        conn.rollback();
+                    } catch (SQLException rollbackFailure) {
+                        logger.debug("Rollback failed in getOrCompute for key '{}': {}", key, rollbackFailure.getMessage());
+                    }
+                }
+                try {
+                    conn.setAutoCommit(true);
+                } catch (SQLException restoreFailure) {
+                    logger.debug("Failed to restore autocommit before pool return: {}", restoreFailure.getMessage());
+                }
+            }
+        } catch (SQLException e) {
+            // Lock acquisition or the re-check failed before the loader ran:
+            // reads fail open, compute directly and return uncached
+            logger.warn("getOrCompute falling back to direct load for key '{}': {}", key, e.getMessage());
+            return loader.get();
+        }
+    }
+
+    /**
+     * Blocks on a transaction-scoped advisory lock derived from the table name
+     * and key. Released automatically on commit or rollback, so a crashed or
+     * failed loader can never leave the key locked.
+     */
+    private void acquireKeyLock(Connection conn, String key) throws SQLException {
+        try (PreparedStatement stmt = conn.prepareStatement(
+                "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))")) {
+            stmt.setString(1, tableName + ":" + key);
+            stmt.executeQuery().close();
+        }
+    }
+
+    /** Reads the raw JSON of a live (non-expired) row on the given connection, or null. */
+    private String readLiveValueJson(Connection conn, String key) throws SQLException {
+        try (PreparedStatement stmt = conn.prepareStatement(
+                "SELECT value FROM " + tableName + " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE)) {
+            stmt.setString(1, key);
+            try (ResultSet rs = stmt.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        }
+    }
+
+    /** Deserializes cached JSON, mapping a stored null marker back to Java null. */
+    private <T> T deserializeMarkerAware(String json, Class<T> clazz) throws JsonProcessingException {
+        if (allowNullValues) {
+            Object raw = objectMapper.readValue(json, Object.class);
+            if (NullValueMarker.isMarker(raw)) {
+                return null;
+            }
+        }
+        return objectMapper.readValue(json, clazz);
+    }
+
+    /** Upserts one entry on the given connection; ttlSeconds null means permanent. */
+    private void writeEntry(Connection conn, String key, Object valueToStore,
+                            Integer ttlSeconds, TTLPolicy policy) throws SQLException, JsonProcessingException {
+        String sql = "INSERT INTO " + tableName +
+                     " (key, value, updated_at, ttl_seconds, ttl_policy, last_accessed) " +
+                     "VALUES (?, ?::jsonb, now(), ?, ?, now()) " +
+                     "ON CONFLICT (key) DO UPDATE SET " +
+                     "value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, " +
+                     "ttl_seconds = EXCLUDED.ttl_seconds, ttl_policy = EXCLUDED.ttl_policy, " +
+                     "last_accessed = EXCLUDED.last_accessed";
+        try (PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, key);
+            stmt.setString(2, objectMapper.writeValueAsString(valueToStore));
+            if (ttlSeconds != null) {
+                stmt.setInt(3, ttlSeconds);
+                stmt.setString(4, policy.name());
+            } else {
+                stmt.setNull(3, java.sql.Types.INTEGER);
+                stmt.setNull(4, java.sql.Types.VARCHAR);
+            }
+            stmt.executeUpdate();
         }
     }
 

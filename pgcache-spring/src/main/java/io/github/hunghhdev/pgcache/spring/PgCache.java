@@ -121,10 +121,10 @@ public class PgCache implements Cache {
             throw new IllegalArgumentException("Cache key cannot be null");
         }
 
-        try {
-            String keyStr = toKeyString(key);
+        String keyStr = toKeyString(key);
 
-            // Try to get from cache first
+        try {
+            // Fast path for per-cache hit/miss accounting; a hit avoids the lock entirely
             // Always refresh TTL - let the core decide based on the entry's TTL policy
             Optional<Object> optionalValue = cacheStore.get(keyStr, Object.class, true);
             if (optionalValue.isPresent()) {
@@ -138,30 +138,31 @@ public class PgCache implements Cache {
             }
             cacheMisses.incrementAndGet();
 
-            // Load value using the valueLoader
-            try {
-                T value = valueLoader.call();
-
-                // Store in cache
-                if (value != null || allowNullValues) {
-                    if (defaultTtl != null) {
-                        cacheStore.put(keyStr, value, defaultTtl, ttlPolicy);
-                    } else {
-                        cacheStore.put(keyStr, value);
+            // Single-flight load: the store's advisory lock guarantees only one
+            // loader runs per key across threads and JVMs (Spring sync contract)
+            return (T) cacheStore.getOrCompute(keyStr, Object.class, defaultTtl, ttlPolicy, () -> {
+                try {
+                    T loaded = valueLoader.call();
+                    if (loaded != null || allowNullValues) {
+                        cachePuts.incrementAndGet();
                     }
-                    cachePuts.incrementAndGet();
+                    return loaded;
+                } catch (Exception e) {
+                    throw new LoaderFailure(e);
                 }
-
-                return value;
-            } catch (Exception e) {
-                throw new ValueRetrievalException(key, valueLoader, e);
-            }
-
-        } catch (ValueRetrievalException e) {
-            throw e;
+            });
+        } catch (LoaderFailure e) {
+            throw new ValueRetrievalException(key, valueLoader, e.getCause());
         } catch (Exception e) {
             logger.error("Failed to get/load value from cache '{}' for key '{}': {}", name, key, e.getMessage());
             throw new PgCacheException("Cache operation failed for cache '" + name + "'", e);
+        }
+    }
+
+    /** Carries a checked loader exception out of the Supplier-based single-flight path. */
+    private static final class LoaderFailure extends RuntimeException {
+        LoaderFailure(Throwable cause) {
+            super(cause);
         }
     }
     

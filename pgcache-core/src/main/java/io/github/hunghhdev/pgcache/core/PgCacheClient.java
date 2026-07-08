@@ -5,6 +5,7 @@ import java.util.Collection;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Supplier;
 
 /**
  * Main client for interacting with the cache using a PgCacheStore backend.
@@ -123,6 +124,42 @@ public interface PgCacheClient {
      * @since 1.6.0
      */
     boolean containsKey(String key);
+
+    // ==================== Read-through with single-flight (v1.9.0) ====================
+
+    /**
+     * Returns the cached value for the key, or computes, stores and returns it.
+     *
+     * <p>On a miss the computation is <em>single-flight</em>: a PostgreSQL
+     * transaction-scoped advisory lock on the key guarantees that only one
+     * caller — across threads <em>and</em> JVMs sharing the database — runs the
+     * loader, while concurrent callers block and then read the freshly stored
+     * value (cache stampede protection).</p>
+     *
+     * <p>The loader runs while holding a pooled connection and the advisory
+     * lock; keep it reasonably fast. Loader exceptions propagate unwrapped and
+     * nothing is cached. If the database is unreachable, the loader is invoked
+     * directly and its result returned uncached (reads fail open).</p>
+     *
+     * <p>A {@code null} loader result is cached only when the store allows null
+     * values; otherwise it is returned uncached.</p>
+     *
+     * @param key the cache key
+     * @param clazz the class of the cached value
+     * @param ttl time to live for a computed value, or {@code null} for a permanent entry
+     * @param loader invoked on a miss to compute the value
+     * @return the cached or computed value; may be {@code null}
+     * @since 1.9.0
+     */
+    <T> T getOrCompute(String key, Class<T> clazz, Duration ttl, Supplier<T> loader);
+
+    /**
+     * Variant of {@link #getOrCompute(String, Class, Duration, Supplier)} with an
+     * explicit TTL policy for the computed value.
+     *
+     * @since 1.9.0
+     */
+    <T> T getOrCompute(String key, Class<T> clazz, Duration ttl, TTLPolicy policy, Supplier<T> loader);
 
     // ==================== Batch Operations (v1.3.0) ====================
 
