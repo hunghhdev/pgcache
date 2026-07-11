@@ -9,7 +9,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -148,6 +150,20 @@ class PgCacheStoreAtomicOpsTest {
             assertEquals(Optional.of("v"), store.getAndDelete("k", String.class));
             assertFalse(store.containsKey("k"));
             assertEquals(Optional.empty(), store.getAndDelete("k", String.class));
+        }
+    }
+
+    @Test
+    void getAndDeleteKeepsEntryWhenDeserializationFails() {
+        try (PgCacheStore store = store("ao_gad_baddeser")) {
+            store.put("k", Collections.singletonMap("a", 1), Duration.ofMinutes(5));
+
+            assertThrows(PgCacheException.class, () -> store.getAndDelete("k", Integer.class),
+                    "a value the requested class cannot map must fail the call");
+            assertTrue(store.containsKey("k"),
+                    "a failed getAndDelete must not destroy the entry (Redis GETDEL never loses data)");
+            assertTrue(store.getAndDelete("k", Map.class).isPresent(),
+                    "the entry must still be readable and deletable with the right type");
         }
     }
 

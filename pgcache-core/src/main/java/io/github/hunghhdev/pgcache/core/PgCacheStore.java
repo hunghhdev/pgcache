@@ -1091,8 +1091,12 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 return value instanceof NullValueMarker ? null : value;
             }
         } catch (PgCacheException e) {
-            logger.warn("getOrCompute read failed for key '{}', falling back to direct load: {}", key, e.getMessage());
-            return loader.get();
+            if (!(e.getCause() instanceof JsonProcessingException)) {
+                logger.warn("getOrCompute read failed for key '{}', falling back to direct load: {}", key, e.getMessage());
+                return loader.get();
+            }
+            // an undeserializable row must not bypass the cache: fall through to
+            // the lock path, which recomputes and overwrites it
         }
 
         try (Connection conn = getValidatedConnection()) {
@@ -1137,24 +1141,33 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
                 }
                 return loaded;
             } finally {
-                if (!committed) {
-                    try {
-                        conn.rollback();
-                    } catch (SQLException rollbackFailure) {
-                        logger.debug("Rollback failed in getOrCompute for key '{}': {}", key, rollbackFailure.getMessage());
-                    }
-                }
-                try {
-                    conn.setAutoCommit(true);
-                } catch (SQLException restoreFailure) {
-                    logger.debug("Failed to restore autocommit before pool return: {}", restoreFailure.getMessage());
-                }
+                settleTransaction(conn, committed, "getOrCompute", key);
             }
         } catch (SQLException e) {
             // Lock acquisition or the re-check failed before the loader ran:
             // reads fail open, compute directly and return uncached
             logger.warn("getOrCompute falling back to direct load for key '{}': {}", key, e.getMessage());
             return loader.get();
+        }
+    }
+
+    /**
+     * Rolls back if the transaction never committed, then restores autocommit
+     * before the connection returns to the pool. Failures are logged, not
+     * thrown, so they never mask the exception already unwinding the caller.
+     */
+    private void settleTransaction(Connection conn, boolean committed, String operation, String key) {
+        if (!committed) {
+            try {
+                conn.rollback();
+            } catch (SQLException rollbackFailure) {
+                logger.debug("Rollback failed in {} for key '{}': {}", operation, key, rollbackFailure.getMessage());
+            }
+        }
+        try {
+            conn.setAutoCommit(true);
+        } catch (SQLException restoreFailure) {
+            logger.debug("Failed to restore autocommit before pool return: {}", restoreFailure.getMessage());
         }
     }
 
@@ -1287,29 +1300,28 @@ public class PgCacheStore implements PgCacheClient, AutoCloseable {
 
         String sql = "DELETE FROM " + tableName + " WHERE key = ? AND " + NOT_EXPIRED_WHERE_CLAUSE + " RETURNING value";
 
-        try (Connection conn = getValidatedConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
+        // Explicit transaction: the delete must not commit until the value has
+        // deserialized — a value the caller cannot read must not be destroyed
+        try (Connection conn = getValidatedConnection()) {
+            conn.setAutoCommit(false);
+            boolean committed = false;
+            try (PreparedStatement stmt = conn.prepareStatement(sql)) {
+                stmt.setString(1, storageKey(key));
 
-            stmt.setString(1, storageKey(key));
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (!rs.next()) {
-                    return Optional.empty();
-                }
-                String json = rs.getString(1);
-                evictionCount.incrementAndGet();
-                invalidateSizeCache();
-                fireOnEvict(key);
-
-                if (allowNullValues) {
-                    Object raw = objectMapper.readValue(json, Object.class);
-                    if (NullValueMarker.isMarker(raw)) {
-                        @SuppressWarnings("unchecked")
-                        T marker = (T) NullValueMarker.getInstance();
-                        return Optional.of(marker);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    if (!rs.next()) {
+                        return Optional.empty(); // nothing deleted, rollback is a no-op
                     }
+                    T result = readMarkerAware(rs.getString(1), j -> objectMapper.readValue(j, clazz));
+                    conn.commit();
+                    committed = true;
+                    evictionCount.incrementAndGet();
+                    invalidateSizeCache();
+                    fireOnEvict(key);
+                    return Optional.of(result);
                 }
-                return Optional.of(objectMapper.readValue(json, clazz));
+            } finally {
+                settleTransaction(conn, committed, "getAndDelete", key);
             }
         } catch (SQLException | JsonProcessingException e) {
             throw new PgCacheException("Failed to getAndDelete key: " + key, e);

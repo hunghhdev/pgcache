@@ -12,6 +12,7 @@ import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
@@ -193,6 +194,29 @@ class PgCacheStoreGetOrComputeTest {
 
             assertEquals(2, loads.get(), "null must not be cached when allowNullValues=false");
             assertFalse(store.containsKey("k"));
+        }
+    }
+
+    @Test
+    void undeserializableRowIsRecomputedAndOverwritten() {
+        try (PgCacheStore store = PgCacheStore.builder().dataSource(dataSource).tableName("goc_corrupt").build()) {
+            // a row the requested class cannot map — e.g. written by another component
+            store.put("k", Collections.singletonMap("a", 1), Duration.ofMinutes(5));
+            AtomicInteger loads = new AtomicInteger();
+
+            Integer first = store.getOrCompute("k", Integer.class, Duration.ofMinutes(5), () -> {
+                loads.incrementAndGet();
+                return 42;
+            });
+            Integer second = store.getOrCompute("k", Integer.class, Duration.ofMinutes(5), () -> {
+                loads.incrementAndGet();
+                return 43;
+            });
+
+            assertEquals(Integer.valueOf(42), first);
+            assertEquals(Integer.valueOf(42), second, "the recomputed value must be served from cache");
+            assertEquals(1, loads.get(), "an undeserializable row must be overwritten, not bypassed on every call");
+            assertEquals(Optional.of(42), store.get("k", Integer.class));
         }
     }
 
