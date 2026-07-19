@@ -1,7 +1,7 @@
 # PgCache
 
 [![Java](https://img.shields.io/badge/Java-11%2B-blue.svg)](https://www.oracle.com/java/)
-[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.7.0-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache)
+[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.9.1-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 **A simple caching library that uses your existing PostgreSQL as cache backend.**
@@ -16,7 +16,7 @@ Perfect for small-to-medium applications that want caching without the complexit
 |----------|---------------------|--------------|
 | Small/Medium app | PostgreSQL + Redis | PostgreSQL only |
 | Infrastructure | 2 systems to maintain | 1 system |
-| Monthly cost | -200+ for Redis | /usr/bin/zsh extra |
+| Monthly cost | $50-200+ for Redis | $0 extra |
 | Complexity | Connection pools, failover for both | Single database |
 
 ### Best For
@@ -37,7 +37,7 @@ Perfect for small-to-medium applications that want caching without the complexit
 
 - **Zero extra infrastructure** - Uses your existing PostgreSQL
 - **Spring Boot integration** - Works with `@Cacheable`, `@CacheEvict`, auto-configuration
-- **Quarkus integration** - Works with `@CacheResult`, MicroProfile Health
+- **Quarkus integration** - CDI injection, Mutiny async API, MicroProfile Health support (programmatic API — `@CacheResult` annotations are not routed to PgCache yet, planned for 2.0)
 - **Cache-stampede protection (v1.9.0)** - `getOrCompute` loads each missing key exactly once across threads *and JVMs* (PostgreSQL advisory locks — something plain Redis cannot do)
 - **Atomic operations (v1.9.0)** - `increment`/`decrement`, `getAndDelete`, `getAndPut`, `persist`, `expireAt` (Redis INCR/GETDEL/GETSET/PERSIST/EXPIREAT parity)
 - **Typed generic reads (v1.9.0)** - `get(key, new TypeReference<List<User>>() {})`
@@ -64,21 +64,21 @@ Perfect for small-to-medium applications that want caching without the complexit
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-core</artifactId>
-  <version>1.7.0</version>
+  <version>1.9.1</version>
 </dependency>
 
 <!-- Spring Boot integration -->
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-spring</artifactId>
-  <version>1.7.0</version>
+  <version>1.9.1</version>
 </dependency>
 
 <!-- Quarkus integration -->
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-quarkus</artifactId>
-  <version>1.7.0</version>
+  <version>1.9.1</version>
 </dependency>
 ```
 
@@ -173,11 +173,11 @@ cache.put("user:123", user, Duration.ofHours(1));
 // Retrieve
 Optional<User> user = cache.get("user:123", User.class);
 
-// Async Operations (v1.6.2)
+// Async Operations (v1.6.0)
 cache.getAsync("user:123", User.class)
      .thenAccept(opt -> System.out.println(opt.orElse(null)));
 
-// Key Check (v1.6.2) - Efficient existence check
+// Key Check (v1.6.0) - Efficient existence check
 boolean exists = cache.containsKey("user:123");
 
 // Pattern Operations
@@ -185,7 +185,7 @@ cache.getKeys("user:%"); // Get all user keys
 cache.evictByPattern("user:%"); // Evict all user keys
 ```
 
-### Event Listeners (v1.6.2)
+### Event Listeners (v1.6.0)
 
 Monitor cache operations by registering listeners:
 
@@ -214,7 +214,7 @@ public class MyCacheListener implements CacheEventListener {
 }
 ```
 
-### Quarkus Health Check (v1.6.2)
+### Quarkus Health Check (v1.6.0)
 
 Add cache health status to your Quarkus Health endpoint:
 
@@ -350,6 +350,27 @@ UNLOGGED tables are what make PgCache fast, and they behave like a cache should 
 - **Writes throw**: `put`/`evict` failures raise `PgCacheException` — silent write failures would let stale data live forever.
 
 ## Migration
+
+### From 1.8.x to 1.9.x
+
+No database changes required. All new APIs (`getOrCompute`, atomic operations, `TypeReference` reads, `scanKeys`, namespaces) are additive.
+
+**Behavior changes (1.9.0):**
+- Event listeners now fire for every operation: `putAll` fires `onPut` per entry, `evictAll`/`evictByPattern` fire `onEvict` per deleted key, `onClear` fires only when `clear()` removed at least one row.
+- TTL expiry is counted in the new `expiredCount` statistic instead of inflating `evictionCount`.
+- Spring `Cache.get(key, type)` now throws `IllegalStateException` on a type mismatch (Spring Cache contract) instead of silently returning `null`.
+
+### From 1.7.x to 1.8.0
+
+Timestamp columns changed from `TIMESTAMP` to `TIMESTAMPTZ` (fixes TTL math across time zones and DST). With `autoCreateTable=true` (the default), existing tables are migrated automatically at startup — a WARN is logged. To migrate manually:
+
+```sql
+ALTER TABLE pgcache_store
+  ALTER COLUMN updated_at TYPE timestamptz USING updated_at AT TIME ZONE current_setting('TimeZone'),
+  ALTER COLUMN updated_at SET DEFAULT now(),
+  ALTER COLUMN last_accessed TYPE timestamptz USING last_accessed AT TIME ZONE current_setting('TimeZone'),
+  ALTER COLUMN last_accessed SET DEFAULT now();
+```
 
 ### From 1.6.x to 1.7.0
 

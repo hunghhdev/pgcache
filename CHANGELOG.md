@@ -129,6 +129,45 @@ No database schema changes required. All deprecations remain functional through 
 
 ---
 
+## [1.6.2] - 2026-03-29
+
+### Fixed
+- Cleanup now expires legacy sliding-TTL rows written by pre-1.2.0 versions (`NULL` `ttl_policy` treated as ABSOLUTE); backward-compatible rows are no longer filtered out of reads.
+- Schema-qualified table names supported for legacy sliding rows and table lookups.
+- Restored Spring default table name compatibility.
+- Restored Quarkus `allow-null-values` compatibility accessor.
+- Spring cache config inherits the global TTL policy when no per-cache policy is set.
+- Permanent `putIfAbsent` no longer blocked by an expired row under the same key.
+- Fixed NPE when `updated_at` is `NULL`; fixed store usage-count leak in `setCacheConfiguration` and `storeMap` (stores now closed when the last cache is removed).
+- Resource cleanup on shutdown: `DisposableBean` in Spring `PgCacheManager`, `@Disposes` in Quarkus producer.
+- Spring TTL policy is configurable via `PgCacheProperties.ttlPolicy`.
+- `tableName` is validated as a SQL identifier (injection guard).
+
+## [1.6.1] - 2026-03-28
+
+### Fixed
+- `refreshTTL` preserves the entry's sliding TTL policy (was silently reset to ABSOLUTE).
+- TTL conversions validated before second-level truncation (sub-second TTLs no longer become zero).
+- Cache size reporting scoped per cache instead of store-wide.
+- Spring value-loader exception semantics preserved (`Cache.ValueRetrievalException`).
+- Quarkus: permanent entries preserved when the default TTL is unset.
+- Integration cache invalidation scoped correctly; `tableName` config honored.
+- Spring typed-cache logging guarded against null types.
+
+## [1.6.0] - 2026-01-12
+
+### Added
+- **Async API**: `getAsync`, `putAsync`, `evictAsync` in `PgCacheClient` (configurable executor via `Builder.asyncExecutor()`).
+- **Key operations**: `containsKey(key)`, `getKeys(pattern)`, `getAllKeys()`.
+- **Event listeners**: `CacheEventListener` interface with `onPut`/`onEvict`/`onClear` callbacks; Spring auto-detects listener beans.
+- **Quarkus health check**: `PgQuarkusHealthCheck` helper for MicroProfile Health.
+- Quarkus `PgQuarkusCache` now uses the non-blocking async API internally.
+
+### Changed
+- Internal refactor: `CacheEventDispatcher` extracted; shared expiry `WHERE` clauses; fixed double-fetch in Spring `PgCache.get(key, type)`.
+
+---
+
 ## [1.5.1] - 2025-12-19
 
 ### Fixed
@@ -306,6 +345,8 @@ pgcache.caches.users.ttl-policy=SLIDING
 
 ## Migration Guides
 
+Current migration guides live in [README.md](README.md#migration). Historical guide below.
+
 ### Migrating from 1.0.0 to 1.2.0
 
 #### Database Schema Changes
@@ -420,41 +461,6 @@ public void testSlidingTTLCleanup() {
     assertFalse(cache.get("test", String.class).isPresent());
 }
 ```
-
----
-
-## Deprecations
-
-None in this release.
-
----
-
-## Known Issues
-
-1. **Size Performance**: Still slow on very large datasets (>1M entries) even with caching
-   - **Workaround**: Avoid frequent size() calls on large caches
-   - **Fix**: Consider approximate count in future release
-
----
-
-## Roadmap
-
-### 1.5.0 (Planned)
-- Spring Boot 3 support
-- Performance benchmarks
-- Keys listing API (`getKeys()`, `getKeysByPattern()`)
-
-### 1.6.0 (Planned)
-- Cache event listeners
-- Compression support for large values
-- Query API for JSONB fields
-
----
-
-## Contributors
-
-- Hung Hoang (@hunghhdev) - Original author
-- Community contributors - See GitHub contributors
 
 ---
 
