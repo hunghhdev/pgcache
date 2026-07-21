@@ -1,7 +1,7 @@
 # PgCache
 
 [![Java](https://img.shields.io/badge/Java-11%2B-blue.svg)](https://www.oracle.com/java/)
-[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.9.1-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache)
+[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.9.2-green.svg)](https://central.sonatype.com/artifact/io.github.hunghhdev/pgcache)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 **Caching for Java apps that uses your existing PostgreSQL as the backend — no Redis needed.**
@@ -24,7 +24,7 @@ Good fit: small-to-medium apps where PostgreSQL is already the primary database 
 <dependency>
   <groupId>io.github.hunghhdev</groupId>
   <artifactId>pgcache-core</artifactId>      <!-- or pgcache-spring / pgcache-quarkus -->
-  <version>1.9.1</version>
+  <version>1.9.2</version>
 </dependency>
 ```
 
